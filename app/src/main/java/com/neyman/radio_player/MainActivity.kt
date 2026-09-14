@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var currentPlaylist = ArrayList<Station>()
     private var currentStationIndex = -1
 
+    private lateinit var navLayout: LinearLayout
     private lateinit var listView: ListView
     private lateinit var settingsScroll: ScrollView
     private lateinit var listAdapter: ArrayAdapter<String>
@@ -56,6 +57,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPlayPause: Button
 
     private var currentMode = "SEARCH"
+    private var preSettingsMode = "SEARCH"
     private var isTr = false
     private var currentSongMetadata = ""
 
@@ -87,7 +89,7 @@ class MainActivity : AppCompatActivity() {
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        val navLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        navLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val btnSearchTab = Button(this).apply { text = getStr("Поиск", "Arama") }
         val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler") }
         val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler") }
@@ -133,8 +135,19 @@ class MainActivity : AppCompatActivity() {
         setContentView(mainLayout)
 
         btnSearchTab.setOnClickListener { currentMode = "SEARCH"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; showSearchDialog() }
-        btnCountriesTab.setOnClickListener { currentMode = "COUNTRIES"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; if (countries.isEmpty()) loadCountries() else updateList(countries) }
-        btnFavTab.setOnClickListener { currentMode = "FAVORITES"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; updateList(favorites.map { it.name }) }
+        btnCountriesTab.setOnClickListener { 
+            currentMode = "COUNTRIES"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+            if (countries.isEmpty()) loadCountries() 
+            else { 
+                updateList(countries) 
+                stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
+            }
+        }
+        btnFavTab.setOnClickListener { 
+            currentMode = "FAVORITES"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; 
+            updateList(favorites.map { it.name }) 
+            stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
+        }
 
         listView.setOnItemClickListener { _, _, position, _ ->
             if (currentMode == "COUNTRIES") { loadStationsByCountry(countries[position].split(" (")[0]) } 
@@ -151,36 +164,55 @@ class MainActivity : AppCompatActivity() {
         controllerFuture.addListener({ player = controllerFuture.get(); setupPlayerListener() }, ContextCompat.getMainExecutor(this))
     }
 
-    // Три точки (Верхнее меню)
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
         menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
         return super.onCreateOptionsMenu(menu)
     }
 
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        val showMenu = currentMode != "SETTINGS"
+        for (i in 0 until menu.size()) { menu.getItem(i).isVisible = showMenu }
+        return super.onPrepareOptionsMenu(menu)
+    }
+
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
-            1 -> { currentMode = "SETTINGS"; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE }
+            1 -> openSettings()
             2 -> attemptExit()
         }
         return super.onOptionsItemSelected(item)
     }
 
-    // Логика кнопки "Назад"
+    private fun openSettings() {
+        if (currentMode == "SETTINGS") return
+        preSettingsMode = currentMode
+        currentMode = "SETTINGS"
+        listView.visibility = View.GONE
+        navLayout.visibility = View.GONE
+        settingsScroll.visibility = View.VISIBLE
+        invalidateOptionsMenu()
+    }
+
     override fun onBackPressed() {
         when (currentMode) {
-            "SETTINGS" -> { currentMode = "SEARCH"; settingsScroll.visibility = View.GONE; listView.visibility = View.VISIBLE }
+            "SETTINGS" -> { 
+                currentMode = preSettingsMode
+                settingsScroll.visibility = View.GONE
+                navLayout.visibility = View.VISIBLE 
+                listView.visibility = View.VISIBLE 
+                invalidateOptionsMenu() 
+            }
             "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; updateList(countries) }
-            "SEARCH", "COUNTRIES", "FAVORITES" -> super.onBackPressed()
             else -> super.onBackPressed()
         }
     }
 
-    // Поддержка гарнитуры для Пред/След
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_MEDIA_NEXT -> { playNext(); return true }
             KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { playPrev(); return true }
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { togglePlayPause(); return true }
         }
         return super.onKeyDown(keyCode, event)
     }
@@ -239,7 +271,6 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(langSpinner)
 
-        // Новое: Дубликаты
         addHeader(getStr("Скрывать дубликаты", "Kopyaları Gizle"))
         val dupSwitch = Switch(this).apply {
             isChecked = settings.hideDuplicates
@@ -247,10 +278,9 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(dupSwitch)
 
-        // Новое: Мин. Битрейт
-        addHeader(getStr("Мин. Битрейт станций", "Min. Bit Hızı (Bitrate)"))
+        addHeader(getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"))
         val bitrateSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Все", "Tümü"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Любое качество (По умолчанию)", "Herhangi bir kalite (Varsayılan)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
             val currentBitrate = settings.minBitrate
             setSelection(when(currentBitrate) { 64 -> 1; 128 -> 2; 192 -> 3; 320 -> 4; else -> 0 })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -310,7 +340,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun copySongMetadata(station: Station) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        // Копируем метаданные, только если это текущая играющая станция, иначе - ее название
         val isCurrentPlaying = (currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url)
         val textToCopy = if (isCurrentPlaying && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
         
@@ -373,7 +402,6 @@ class MainActivity : AppCompatActivity() {
                     val newFileUri = DocumentsContract.createDocument(contentResolver, docUri, "audio/*", fileName)
                     out = newFileUri?.let { contentResolver.openOutputStream(it) }
                 } else {
-                    // Используем стандартную публичную папку Music, чтобы не было ошибок на Android 10+
                     val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
                     if (!rootDir.exists()) rootDir.mkdirs()
                     out = FileOutputStream(File(rootDir, fileName))
@@ -394,63 +422,108 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupPlayerListener() {
+        player?.repeatMode = Player.REPEAT_MODE_ALL
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
+            
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
                 val info = if (artist.isNotEmpty() && title.isNotEmpty()) "$artist - $title" else title
-                if (info.isNotEmpty()) { currentSongMetadata = info; songInfoText.text = info; songInfoText.announceForAccessibility(info) }
+                if (info.isNotEmpty() && artist != "Радио" && artist != "Radyo") { 
+                    currentSongMetadata = info; songInfoText.text = info; songInfoText.announceForAccessibility(info) 
+                }
+            }
+            
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val idx = player?.currentMediaItemIndex ?: -1
+                if (idx != -1 && currentPlaylist.isNotEmpty() && idx < currentPlaylist.size) {
+                    if (currentStationIndex != idx) {
+                        if (isRecording) {
+                            isRecording = false
+                            Toast.makeText(this@MainActivity, getStr("Запись остановлена (смена станции)", "Kayıt durduruldu (istasyon değişti)"), Toast.LENGTH_SHORT).show()
+                        }
+                        currentStationIndex = idx
+                        val st = currentPlaylist[idx]
+                        stationNameText.text = st.name
+                        currentSongMetadata = ""
+                        songInfoText.text = ""
+                        stationNameText.announceForAccessibility((if(isTr) "Çalınıyor: " else "Включаю: ") + st.name)
+                    }
+                }
+            }
+            
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
+                stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
             }
         })
     }
 
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
-        currentPlaylist = ArrayList(playlist); currentStationIndex = index
-        val station = currentPlaylist[index]
-        currentSongMetadata = ""; stationNameText.text = station.name; songInfoText.text = "" 
-        stationNameText.announceForAccessibility((if(isTr) "Çalınıyor: " else "Включаю: ") + station.name)
-        val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
-        player?.setMediaItem(MediaItem.Builder().setUri(station.url).setMediaMetadata(meta).build())
-        player?.prepare(); player?.play()
+        
+        val isSamePlaylist = (currentPlaylist.size == playlist.size && currentPlaylist.isNotEmpty() && currentPlaylist[0].url == playlist[0].url)
+        currentPlaylist = ArrayList(playlist)
+        
+        if (isSamePlaylist && player?.mediaItemCount == playlist.size) {
+            player?.seekToDefaultPosition(index)
+            player?.play()
+        } else {
+            val mediaItems = playlist.map { st ->
+                val meta = MediaMetadata.Builder().setTitle(st.name).setArtist(if(isTr) "Radyo" else "Радио").build()
+                MediaItem.Builder().setMediaId(st.url).setUri(st.url).setMediaMetadata(meta).build()
+            }
+            player?.setMediaItems(mediaItems, index, 0)
+            player?.prepare()
+            player?.play()
+        }
     }
 
     private fun togglePlayPause() { if (player?.isPlaying == true) player?.pause() else player?.play() }
-    private fun playNext() { if (currentPlaylist.isNotEmpty()) playStation((currentStationIndex + 1) % currentPlaylist.size, currentPlaylist) }
-    private fun playPrev() { if (currentPlaylist.isNotEmpty()) playStation(if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1, currentPlaylist) }
+    private fun playNext() { player?.seekToNextMediaItem() }
+    private fun playPrev() { player?.seekToPreviousMediaItem() }
 
     private fun fetchStations(endpoint: String) {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             val res = fetchJson("https://all.api.radio-browser.info/json/stations/$endpoint?limit=200")
             
-            // 1. Преобразуем ответ в список JSONObject для обработки
             var rawList = ArrayList<JSONObject>()
             for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
             
-            // 2. Убираем дубликаты, если настройка включена
             if (settings.hideDuplicates) {
                 rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList))
             }
             
-            // 3. Фильтруем по битрейту и собираем финальный список
             stations.clear()
             for (o in rawList) {
                 if (o.optInt("bitrate", 0) < settings.minBitrate) continue
                 val url = if (o.optString("url_resolved").isNotEmpty()) o.optString("url_resolved") else o.optString("url")
                 if (url.isNotEmpty()) stations.add(Station.fromJson(o))
             }
-            runOnUiThread { updateList(stations.map { it.name }) }
+            
+            stations.sortBy { it.name.lowercase(Locale.getDefault()) }
+            
+            runOnUiThread { 
+                updateList(stations.map { it.name }) 
+                stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
+            }
         }
     }
 
     private fun loadCountries() {
+        stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             val res = fetchJson("https://all.api.radio-browser.info/json/countries")
             countries.clear()
             for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
-            countries.sort(); runOnUiThread { updateList(countries) }
+            countries.sort(); 
+            runOnUiThread { 
+                updateList(countries) 
+                stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
+            }
         }
     }
 

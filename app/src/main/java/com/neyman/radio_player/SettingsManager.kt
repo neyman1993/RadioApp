@@ -17,7 +17,7 @@ class SettingsManager(context: Context) {
         set(value) = sp.edit().putString("rec_format", value).apply()
         
     var hideDuplicates: Boolean
-        get() = sp.getBoolean("hide_duplicates", true)
+        get() = sp.getBoolean("hide_duplicates", false)
         set(value) = sp.edit().putBoolean("hide_duplicates", value).apply()
         
     var minBitrate: Int
