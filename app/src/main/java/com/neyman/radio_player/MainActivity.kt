@@ -46,14 +46,12 @@ class MainActivity : AppCompatActivity() {
     private var currentStationIndex = -1
 
     private lateinit var listAdapter: ArrayAdapter<String>
-    private lateinit var searchInput: EditText
     private lateinit var stationNameText: TextView
     private lateinit var songInfoText: TextView
     private lateinit var btnPlayPause: Button
 
     private var currentMode = "SEARCH"
     
-    // Переменные для перевода
     private var isTr = false
     private var txtSearch = ""
     private var txtCountries = ""
@@ -61,7 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var txtFind = ""
     private var txtLoading = ""
     private var txtNotSelected = ""
-    private var txtWaitMeta = ""
+    private var txtCancel = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,21 +71,13 @@ class MainActivity : AppCompatActivity() {
         txtFind = if (isTr) "Bul" else "Найти"
         txtLoading = if (isTr) "Yükleniyor..." else "Загрузка..."
         txtNotSelected = if (isTr) "Radyo seçilmedi" else "Радио не выбрано"
-        txtWaitMeta = if (isTr) "Meta veriler bekleniyor..." else "Ожидание метаданных..."
+        txtCancel = if (isTr) "İptal" else "Отмена"
+        
+        val txtPrev = if (isTr) "Önceki" else "Пред"
+        val txtNext = if (isTr) "Sonraki" else "След"
 
         loadFavoritesFromStorage()
-        setupUI()
-
-        // Подключение к сервису
-        val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
-        controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
-        controllerFuture.addListener({
-            player = controllerFuture.get()
-            setupPlayerListener()
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    private fun setupUI() {
+        
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         val navLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -97,12 +87,6 @@ class MainActivity : AppCompatActivity() {
         navLayout.addView(btnSearchTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         navLayout.addView(btnCountriesTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         navLayout.addView(btnFavTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-        val searchBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(16,16,16,16) }
-        searchInput = EditText(this).apply { hint = txtSearch }
-        val btnDoSearch = Button(this).apply { text = txtFind }
-        searchBox.addView(searchInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        searchBox.addView(btnDoSearch)
 
         val listView = ListView(this)
         listAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
@@ -121,39 +105,76 @@ class MainActivity : AppCompatActivity() {
             setTypeface(null, Typeface.BOLD)
         }
         songInfoText = TextView(this).apply {
-            text = txtWaitMeta
+            text = ""
             textSize = 14f
             setTextColor(Color.LTGRAY)
             setPadding(0, 8, 0, 16)
         }
         
         val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        val btnPrev = Button(this).apply { text = "<<"; setOnClickListener { playPrev() } }
+        val btnPrevBtn = Button(this).apply { text = txtPrev; setOnClickListener { playPrev() } }
         btnPlayPause = Button(this).apply { text = if(isTr) "Oynat" else "Плей"; setOnClickListener { togglePlayPause() } }
-        val btnNext = Button(this).apply { text = ">>"; setOnClickListener { playNext() } }
-        controlsLayout.addView(btnPrev)
+        val btnNextBtn = Button(this).apply { text = txtNext; setOnClickListener { playNext() } }
+        
+        controlsLayout.addView(btnPrevBtn)
         controlsLayout.addView(btnPlayPause)
-        controlsLayout.addView(btnNext)
+        controlsLayout.addView(btnNextBtn)
 
         miniPlayerLayout.addView(stationNameText)
         miniPlayerLayout.addView(songInfoText)
         miniPlayerLayout.addView(controlsLayout)
 
         mainLayout.addView(navLayout)
-        mainLayout.addView(searchBox)
         mainLayout.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         mainLayout.addView(miniPlayerLayout)
+        
         setContentView(mainLayout)
 
-        btnSearchTab.setOnClickListener { currentMode = "SEARCH"; searchBox.visibility = View.VISIBLE; updateList(stations.map { it.name }) }
-        btnCountriesTab.setOnClickListener { currentMode = "COUNTRIES"; searchBox.visibility = View.GONE; if (countries.isEmpty()) loadCountries() else updateList(countries) }
-        btnFavTab.setOnClickListener { currentMode = "FAVORITES"; searchBox.visibility = View.GONE; updateList(favorites.map { it.name }) }
-        btnDoSearch.setOnClickListener { val q = searchInput.text.toString().trim(); if (q.isNotEmpty()) searchStations(q) }
+        btnSearchTab.setOnClickListener { showSearchDialog() }
+        btnCountriesTab.setOnClickListener { currentMode = "COUNTRIES"; if (countries.isEmpty()) loadCountries() else updateList(countries) }
+        btnFavTab.setOnClickListener { currentMode = "FAVORITES"; updateList(favorites.map { it.name }) }
 
         listView.setOnItemClickListener { _, _, position, _ ->
             if (currentMode == "COUNTRIES") { loadStationsByCountry(countries[position].split(" (")[0]) } 
             else { playStation(position, if (currentMode == "FAVORITES") favorites else stations) }
         }
+        
+        listView.setOnItemLongClickListener { _, _, position, _ ->
+            if (currentMode == "COUNTRIES") return@setOnItemLongClickListener false
+            val list = if (currentMode == "FAVORITES") favorites else stations
+            if (position in list.indices) {
+                showStationMenu(list[position])
+                true
+            } else false
+        }
+
+        val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
+        controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
+        controllerFuture.addListener({
+            player = controllerFuture.get()
+            setupPlayerListener()
+        }, ContextCompat.getMainExecutor(this))
+    }
+    
+    private fun showSearchDialog() {
+        val input = EditText(this).apply {
+            hint = txtSearch
+            contentDescription = txtSearch
+        }
+        AlertDialog.Builder(this)
+            .setTitle(txtSearch)
+            .setView(input)
+            .setPositiveButton(txtFind) { _, _ ->
+                val q = input.text.toString().trim()
+                if (q.isNotEmpty()) {
+                    currentMode = "SEARCH"
+                    searchStations(q)
+                }
+            }
+            .setNegativeButton(txtCancel, null)
+            .show()
+            
+        input.requestFocus()
     }
 
     private fun setupPlayerListener() {
@@ -180,7 +201,7 @@ class MainActivity : AppCompatActivity() {
         val station = currentPlaylist[index]
 
         stationNameText.text = station.name
-        songInfoText.text = txtLoading
+        songInfoText.text = "" 
         stationNameText.announceForAccessibility(if(isTr) "Çalınıyor: " else "Включаю: " + station.name)
 
         val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
@@ -242,6 +263,55 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateList(items: List<String>) { listAdapter.clear(); listAdapter.addAll(items); listAdapter.notifyDataSetChanged() }
+    
+    private fun showStationMenu(station: Station) {
+        val isFav = favorites.any { it.url == station.url }
+        val favOption = if (isFav) (if(isTr) "Favorilerden çıkar" else "Удалить из избранного") else (if(isTr) "Favorilere ekle" else "Добавить в избранное")
+        val shareOption = if(isTr) "Bağlantıyı paylaş" else "Поделиться ссылкой"
+        val infoOption = if(isTr) "İstasyon bilgisi" else "Информация о станции"
+        
+        val options = arrayOf(favOption, shareOption, infoOption)
+
+        AlertDialog.Builder(this)
+            .setTitle(station.name)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> toggleFavorite(station)
+                    1 -> shareStation(station)
+                    2 -> showStationInfo(station)
+                }
+            }.show()
+    }
+
+    private fun toggleFavorite(station: Station) {
+        val index = favorites.indexOfFirst { it.url == station.url }
+        if (index != -1) {
+            favorites.removeAt(index)
+            Toast.makeText(this, if(isTr) "Favorilerden çıkarıldı" else "Удалено из избранного", Toast.LENGTH_SHORT).show()
+        } else {
+            favorites.add(station)
+            Toast.makeText(this, if(isTr) "Favorilere eklendi" else "Добавлено в избранное", Toast.LENGTH_SHORT).show()
+        }
+        saveFavoritesToStorage()
+        if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
+    }
+
+    private fun shareStation(station: Station) {
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, station.name)
+            putExtra(Intent.EXTRA_TEXT, (if(isTr) "Dinle: " else "Слушай ") + station.name + ": " + station.url)
+        }
+        startActivity(Intent.createChooser(shareIntent, if(isTr) "İstasyonu paylaş" else "Поделиться станцией"))
+    }
+
+    private fun showStationInfo(station: Station) {
+        val info = (if(isTr) "Adı: " else "Название: ") + station.name + "\n" +
+                   (if(isTr) "Ülke: " else "Страна: ") + station.country + "\n" +
+                   "URL: " + station.url
+                   
+        AlertDialog.Builder(this).setTitle(if(isTr) "Bilgi" else "Информация").setMessage(info).setPositiveButton("OK", null).show()
+    }
 
     private fun saveFavoritesToStorage() {
         val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
