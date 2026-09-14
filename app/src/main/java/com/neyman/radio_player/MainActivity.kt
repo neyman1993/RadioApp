@@ -67,7 +67,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Подключаем наш новый модуль настроек
         settings = SettingsManager(this)
         settings.applySettings()
         isTr = Locale.getDefault().language == "tr"
@@ -260,7 +259,7 @@ class MainActivity : AppCompatActivity() {
                     if (!rootDir.exists()) rootDir.mkdirs()
                     out = FileOutputStream(File(rootDir, fileName))
                 }
-                val buffer = ByteArray(8192); var bytesRead: Int
+                val buffer = ByteArray(8192); var bytesRead = 0
                 while (isRecording && input.read(buffer).also { bytesRead = it } != -1) { out?.write(buffer, 0, bytesRead) }
             } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи.", "Kayıt hatası."), Toast.LENGTH_LONG).show() } }
             finally { try { out?.close() } catch (e: Exception) {}; try { input?.close() } catch (e: Exception) {}; isRecording = false }
