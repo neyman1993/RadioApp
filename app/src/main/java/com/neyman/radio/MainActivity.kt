@@ -189,18 +189,23 @@ class MainActivity : AppCompatActivity() {
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, station.name)
-            putExtra(Intent.EXTRA_TEXT, "Слушай ${station.name}: ${station.url}")
+            putExtra(Intent.EXTRA_TEXT, "Слушай " + station.name + ": " + station.url)
         }
         startActivity(Intent.createChooser(shareIntent, "Поделиться станцией"))
     }
 
     private fun showStationInfo(station: Station) {
-        val info = "Название: ${station.name}\nСтрана: ${station.country}\nКодек: ${station.codec}\nБитрейт: ${station.bitrate}\nТеги: ${station.tags}"
+        val info = "Название: " + station.name + "\n" +
+                   "Страна: " + station.country + "\n" +
+                   "Кодек: " + station.codec + "\n" +
+                   "Битрейт: " + station.bitrate + " kbps\n" +
+                   "Теги: " + station.tags
+                   
         AlertDialog.Builder(this).setTitle("Информация").setMessage(info).setPositiveButton("ОК", null).show()
     }
 
     private fun playStation(station: Station) {
-        setStatus("Подключение: ${station.name}...")
+        setStatus("Подключение: " + station.name)
         stopAudio()
 
         thread {
@@ -212,7 +217,7 @@ class MainActivity : AppCompatActivity() {
                     setDataSource(station.url)
                     setOnPreparedListener {
                         it.start()
-                        runOnUiThread { setStatus("Играет: ${station.name}") }
+                        runOnUiThread { setStatus("Играет: " + station.name) }
                     }
                     setOnErrorListener { _, _, _ ->
                         runOnUiThread { setStatus("Ошибка воспроизведения") }
@@ -237,7 +242,6 @@ class MainActivity : AppCompatActivity() {
     
     private fun setStatus(msg: String) {
         statusText.text = msg
-        // Эта строка заставит TalkBack озвучить статус автоматически!
         statusText.announceForAccessibility(msg)
     }
 
@@ -245,16 +249,16 @@ class MainActivity : AppCompatActivity() {
         setStatus("Поиск станций...")
         thread {
             val encoded = URLEncoder.encode(name, "UTF-8")
-            val url = "https://all.api.radio-browser.info/json/stations/byname/$encoded?limit=100"
+            val url = "https://all.api.radio-browser.info/json/stations/byname/" + encoded + "?limit=100"
             val result = fetchJson(url)
             stations.clear()
             for (i in 0 until result.length()) {
                 val obj = result.getJSONObject(i)
-                val streamUrl = obj.optString("url_resolved").ifEmpty { obj.optString("url") }
+                val streamUrl = if (obj.optString("url_resolved").isNotEmpty()) obj.optString("url_resolved") else obj.optString("url")
                 if (streamUrl.isNotEmpty()) stations.add(Station.fromJson(obj))
             }
             runOnUiThread {
-                setStatus("Найдено станций: ${stations.size}")
+                setStatus("Найдено станций: " + stations.size)
                 updateList(stations.map { it.name })
             }
         }
@@ -269,31 +273,31 @@ class MainActivity : AppCompatActivity() {
                 val obj = result.getJSONObject(i)
                 val cName = obj.optString("name")
                 val count = obj.optInt("stationcount")
-                if (cName.isNotEmpty() && count > 0) countries.add("$cName ($count)")
+                if (cName.isNotEmpty() && count > 0) countries.add(cName + " (" + count + ")")
             }
             countries.sort()
             runOnUiThread {
-                setStatus("Стран загружено: ${countries.size}")
+                setStatus("Стран загружено: " + countries.size)
                 updateList(countries)
             }
         }
     }
 
     private fun loadStationsByCountry(country: String) {
-        setStatus("Загрузка станций ($country)...")
+        setStatus("Загрузка станций для страны " + country)
         thread {
             val encoded = URLEncoder.encode(country, "UTF-8")
-            val url = "https://all.api.radio-browser.info/json/stations/bycountry/$encoded?limit=1000"
+            val url = "https://all.api.radio-browser.info/json/stations/bycountry/" + encoded + "?limit=1000"
             val result = fetchJson(url)
             stations.clear()
             for (i in 0 until result.length()) {
                 val obj = result.getJSONObject(i)
-                val streamUrl = obj.optString("url_resolved").ifEmpty { obj.optString("url") }
+                val streamUrl = if (obj.optString("url_resolved").isNotEmpty()) obj.optString("url_resolved") else obj.optString("url")
                 if (streamUrl.isNotEmpty()) stations.add(Station.fromJson(obj))
             }
             runOnUiThread {
                 currentMode = "SEARCH"
-                setStatus("$country: ${stations.size} станций")
+                setStatus(country + ": " + stations.size + " станций")
                 updateList(stations.map { it.name })
             }
         }
