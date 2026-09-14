@@ -461,7 +461,6 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    // НОВАЯ ПЕРЕПИСАННАЯ ФУНКЦИЯ ДЛЯ БЕСПЕРЕБОЙНОЙ ИГРЫ И СБРОСА ОШИБОК
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
@@ -484,11 +483,14 @@ class MainActivity : AppCompatActivity() {
         }
         
         player?.seekToDefaultPosition(index)
-        player?.prepare() // МГНОВЕННЫЙ СБРОС ОШИБКИ И СТАРТ!
+        player?.prepare() 
         player?.play()
     }
 
-    // НОВЫЕ ФУНКЦИИ ДЛЯ ПЕРЕМОТКИ, КОТОРЫЕ ИСПОЛЬЗУЮТ playStation
+    private fun togglePlayPause() {
+        if (player?.isPlaying == true) player?.pause() else player?.play()
+    }
+
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
         val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
