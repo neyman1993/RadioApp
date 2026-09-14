@@ -2,15 +2,34 @@ plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
 android {
     namespace 'com.neyman.radio_player'
     compileSdk 34
+    
+    signingConfigs {
+        release {
+            storeFile file("keystore.jks")
+            storePassword "password"
+            keyAlias "my-alias"
+            keyPassword "password"
+        }
+    }
+
     defaultConfig {
         applicationId "com.neyman.radio_player"
         minSdk 24
         targetSdk 34
         versionCode 3
-        versionName "2.1"
+        versionName "1.2"
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = '17' }
+    
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.release
+        }
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
 }
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'

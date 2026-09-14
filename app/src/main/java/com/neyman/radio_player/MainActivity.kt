@@ -461,29 +461,45 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    // НОВАЯ ПЕРЕПИСАННАЯ ФУНКЦИЯ ДЛЯ БЕСПЕРЕБОЙНОЙ ИГРЫ И СБРОСА ОШИБОК
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
         val isSamePlaylist = (currentPlaylist.size == playlist.size && currentPlaylist.isNotEmpty() && currentPlaylist[0].url == playlist[0].url)
         currentPlaylist = ArrayList(playlist)
+        currentStationIndex = index
         
-        if (isSamePlaylist && player?.mediaItemCount == playlist.size) {
-            player?.seekToDefaultPosition(index)
-            player?.play()
-        } else {
+        val station = currentPlaylist[index]
+        currentSongMetadata = ""
+        stationNameText.text = station.name
+        songInfoText.text = getStr("Загрузка...", "Yükleniyor...") 
+        stationNameText.announceForAccessibility((if(isTr) "Çalınıyor: " else "Включаю: ") + station.name)
+
+        if (!isSamePlaylist || player?.mediaItemCount != playlist.size) {
             val mediaItems = playlist.map { st ->
                 val meta = MediaMetadata.Builder().setTitle(st.name).setArtist(if(isTr) "Radyo" else "Радио").build()
                 MediaItem.Builder().setMediaId(st.url).setUri(st.url).setMediaMetadata(meta).build()
             }
-            player?.setMediaItems(mediaItems, index, 0)
-            player?.prepare()
-            player?.play()
+            player?.setMediaItems(mediaItems)
         }
+        
+        player?.seekToDefaultPosition(index)
+        player?.prepare() // МГНОВЕННЫЙ СБРОС ОШИБКИ И СТАРТ!
+        player?.play()
     }
 
-    private fun togglePlayPause() { if (player?.isPlaying == true) player?.pause() else player?.play() }
-    private fun playNext() { player?.seekToNextMediaItem() }
-    private fun playPrev() { player?.seekToPreviousMediaItem() }
+    // НОВЫЕ ФУНКЦИИ ДЛЯ ПЕРЕМОТКИ, КОТОРЫЕ ИСПОЛЬЗУЮТ playStation
+    private fun playNext() {
+        if (currentPlaylist.isEmpty()) return
+        val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
+        playStation(nextIdx, currentPlaylist)
+    }
+
+    private fun playPrev() {
+        if (currentPlaylist.isEmpty()) return
+        val prevIdx = if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1
+        playStation(prevIdx, currentPlaylist)
+    }
 
     private fun fetchStations(endpoint: String) {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
