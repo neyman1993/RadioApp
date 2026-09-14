@@ -15,6 +15,14 @@ class SettingsManager(context: Context) {
     var recFormat: String
         get() = sp.getString("rec_format", ".mp3") ?: ".mp3"
         set(value) = sp.edit().putString("rec_format", value).apply()
+        
+    var hideDuplicates: Boolean
+        get() = sp.getBoolean("hide_duplicates", true)
+        set(value) = sp.edit().putBoolean("hide_duplicates", value).apply()
+        
+    var minBitrate: Int
+        get() = sp.getInt("min_bitrate", 0)
+        set(value) = sp.edit().putInt("min_bitrate", value).apply()
 
     fun applySettings() {
         val lang = sp.getString("app_lang", "system")
