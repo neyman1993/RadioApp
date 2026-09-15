@@ -9,6 +9,7 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.*
 import android.provider.DocumentsContract
+import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.Menu
@@ -38,6 +39,8 @@ import java.util.*
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
+    private val TAG = "RadioAppLog"
+
     private lateinit var controllerFuture: ListenableFuture<MediaController>
     private var player: MediaController? = null
     private lateinit var settings: SettingsManager
@@ -81,6 +84,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d(TAG, "onCreate: Приложение запущено")
         
         settings = SettingsManager(this)
         settings.applySettings()
@@ -164,9 +168,14 @@ class MainActivity : AppCompatActivity() {
             if (position in list.indices) { showStationListMenu(list[position]); true } else false
         }
 
+        Log.d(TAG, "onCreate: Настройка MediaController")
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
-        controllerFuture.addListener({ player = controllerFuture.get(); setupPlayerListener() }, ContextCompat.getMainExecutor(this))
+        controllerFuture.addListener({ 
+            player = controllerFuture.get()
+            Log.d(TAG, "onCreate: MediaController успешно подключен")
+            setupPlayerListener() 
+        }, ContextCompat.getMainExecutor(this))
     }
 
     private fun updateUIForMode() {
@@ -176,7 +185,7 @@ class MainActivity : AppCompatActivity() {
                 listView.visibility = View.GONE
                 settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
-                supportActionBar?.title = getStr("Радио Плеер", "Radio Player")
+                supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar")
             }
             "SEARCH_RESULTS" -> {
                 navLayout.visibility = View.GONE
@@ -453,11 +462,25 @@ class MainActivity : AppCompatActivity() {
     private fun setupPlayerListener() {
         player?.repeatMode = Player.REPEAT_MODE_ALL
         player?.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
+            
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_IDLE -> Log.d(TAG, "ExoPlayer: STATE_IDLE (остановлен или ошибка)")
+                    Player.STATE_BUFFERING -> Log.d(TAG, "ExoPlayer: STATE_BUFFERING (буферизация)")
+                    Player.STATE_READY -> Log.d(TAG, "ExoPlayer: STATE_READY (готов играть)")
+                    Player.STATE_ENDED -> Log.d(TAG, "ExoPlayer: STATE_ENDED (закончился плейлист)")
+                }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) { 
+                Log.d(TAG, "ExoPlayer: isPlayingChanged = $isPlaying")
+                btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") 
+            }
             
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
+                Log.d(TAG, "ExoPlayer: onMediaMetadataChanged -> artist: $artist, title: $title")
                 val info = if (artist.isNotEmpty() && title.isNotEmpty()) "$artist - $title" else title
                 if (info.isNotEmpty() && artist != "Радио" && artist != "Radyo") { 
                     currentSongMetadata = info; songInfoText.text = info; songInfoText.announceForAccessibility(info) 
@@ -466,6 +489,8 @@ class MainActivity : AppCompatActivity() {
             
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val idx = player?.currentMediaItemIndex ?: -1
+                Log.d(TAG, "ExoPlayer: onMediaItemTransition -> index: $idx, URL: ${mediaItem?.mediaId}")
+                
                 if (idx != -1 && currentPlaylist.isNotEmpty() && idx < currentPlaylist.size) {
                     if (currentStationIndex != idx) {
                         if (isRecording) {
@@ -481,14 +506,15 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 
-                // МОЩНАЯ ЗАЩИТА ОТ ОШИБОК: Если станция была сломана, "Следующий" принудительно восстановит плеер
                 if (player?.playbackState == Player.STATE_IDLE || player?.playerError != null) {
+                    Log.d(TAG, "ExoPlayer: принудительный сброс ошибки через prepare()")
                     player?.prepare()
                     player?.play()
                 }
             }
             
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                Log.e(TAG, "ExoPlayer ERROR: код ${error.errorCode}, сообщение: ${error.message}", error)
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
                 songInfoText.text = ""
@@ -498,8 +524,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playStation(index: Int, playlist: List<Station>) {
-        if (playlist.isEmpty() || index !in playlist.indices) return
+        if (playlist.isEmpty() || index !in playlist.indices) {
+            Log.e(TAG, "playStation ERROR: плейлист пуст или неверный индекс ($index)")
+            return
+        }
         
+        Log.d(TAG, "playStation вызван: индекс $index, URL: ${playlist[index].url}")
         val isSamePlaylist = (currentPlaylist.size == playlist.size && currentPlaylist.isNotEmpty() && currentPlaylist[0].url == playlist[0].url)
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
@@ -511,41 +541,55 @@ class MainActivity : AppCompatActivity() {
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
         if (!isSamePlaylist || player?.mediaItemCount != playlist.size) {
+            Log.d(TAG, "playStation: загружаем новый плейлист в ExoPlayer (размер ${playlist.size})")
             val mediaItems = playlist.map { st ->
                 val meta = MediaMetadata.Builder().setTitle(st.name).setArtist(if(isTr) "Radyo" else "Радио").build()
                 MediaItem.Builder().setMediaId(st.url).setUri(st.url).setMediaMetadata(meta).build()
             }
             player?.setMediaItems(mediaItems)
+        } else {
+            Log.d(TAG, "playStation: плейлист тот же, просто меняем индекс")
         }
         
-        player?.seekToDefaultPosition(index) // ВЕРНУЛ ПРАВИЛЬНУЮ ФУНКЦИЮ
+        Log.d(TAG, "playStation: seekToDefaultPosition($index) и prepare()")
+        player?.seekToDefaultPosition(index) 
         player?.prepare() 
         player?.play()
     }
 
     private fun togglePlayPause() {
+        Log.d(TAG, "togglePlayPause: текущее состояние isPlaying = ${player?.isPlaying}")
         if (player?.isPlaying == true) player?.pause() else player?.play()
     }
 
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
         val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
+        Log.d(TAG, "playNext: переключаем на $nextIdx")
         playStation(nextIdx, currentPlaylist)
     }
 
     private fun playPrev() {
         if (currentPlaylist.isEmpty()) return
         val prevIdx = if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1
+        Log.d(TAG, "playPrev: переключаем на $prevIdx")
         playStation(prevIdx, currentPlaylist)
     }
 
     private fun fetchStations(endpoint: String) {
+        Log.d(TAG, "fetchStations: начало запроса $endpoint")
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             val res = fetchJson("https://all.api.radio-browser.info/json/stations/$endpoint?limit=200")
+            Log.d(TAG, "fetchStations: получено ${res.length()} записей от API")
+            
             var rawList = ArrayList<JSONObject>()
             for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
-            if (settings.hideDuplicates) { rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList)) }
+            
+            if (settings.hideDuplicates) { 
+                rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList))
+                Log.d(TAG, "fetchStations: после скрытия дубликатов осталось ${rawList.size}")
+            }
             
             stations.clear()
             for (o in rawList) {
@@ -555,6 +599,7 @@ class MainActivity : AppCompatActivity() {
             }
             stations.sortBy { it.name.lowercase(Locale.getDefault()) }
             
+            Log.d(TAG, "fetchStations: финальный список готов, размер ${stations.size}")
             runOnUiThread { 
                 updateList(stations.map { it.name }) 
                 stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
@@ -563,12 +608,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadCountries() {
+        Log.d(TAG, "loadCountries: начало загрузки")
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             val res = fetchJson("https://all.api.radio-browser.info/json/countries")
             countries.clear()
             for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
             countries.sort(); 
+            Log.d(TAG, "loadCountries: стран загружено ${countries.size}")
             runOnUiThread { 
                 updateList(countries) 
                 stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
@@ -587,7 +634,10 @@ class MainActivity : AppCompatActivity() {
         return try {
             val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=10000; readTimeout=10000; setRequestProperty("User-Agent", "radio_player") }
             JSONArray(c.inputStream.bufferedReader().use { it.readText() })
-        } catch (e: Exception) { JSONArray() }
+        } catch (e: Exception) { 
+            Log.e(TAG, "fetchJson ERROR: ${e.message}", e)
+            JSONArray() 
+        }
     }
 
     private fun updateList(items: List<String>) { listAdapter.clear(); listAdapter.addAll(items); listAdapter.notifyDataSetChanged() }
