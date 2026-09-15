@@ -53,10 +53,13 @@ object StationDeduplicator {
         for ((cleanName, versions) in groups) {
             versions.sortByDescending { getStationScore(it) }
             val bestVersion = versions.firstOrNull() ?: continue
-            val url = bestVersion.optString("url_resolved", "").trim().lowercase()
             
-            if (!seenUrls.containsKey(url) || seenUrls[url] != cleanName) {
-                seenUrls[url] = cleanName
+            // ИСПРАВЛЕНИЕ: Берем оригинальную ссылку без изменения букв!
+            val urlOriginal = bestVersion.optString("url_resolved", bestVersion.optString("url", "")).trim()
+            val urlLower = urlOriginal.lowercase()
+            
+            if (!seenUrls.containsKey(urlLower) || seenUrls[urlLower] != cleanName) {
+                seenUrls[urlLower] = cleanName
                 finalList.add(bestVersion)
             }
         }

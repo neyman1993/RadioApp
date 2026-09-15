@@ -56,8 +56,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var songInfoText: TextView
     private lateinit var btnPlayPause: Button
 
-    private var currentMode = "SEARCH"
-    private var preSettingsMode = "SEARCH"
+    private var currentMode = "MAIN_MENU"
+    private var currentCountryName = ""
     private var isTr = false
     private var currentSongMetadata = ""
 
@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             settings.recFolderUri = uri.toString()
-            Toast.makeText(this, getStr("Папка успешно выбрана", "Klasör başarıyla seçildi"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -89,14 +89,21 @@ class MainActivity : AppCompatActivity() {
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        navLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val btnSearchTab = Button(this).apply { text = getStr("Поиск", "Arama") }
-        val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler") }
-        val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler") }
+        // Главное меню (кнопки друг под другом)
+        navLayout = LinearLayout(this).apply { 
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(48, 48, 48, 48)
+        }
+        val btnParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 16, 0, 16) }
         
-        navLayout.addView(btnSearchTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        navLayout.addView(btnCountriesTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        navLayout.addView(btnFavTab, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val btnSearchTab = Button(this).apply { text = getStr("Поиск", "Arama"); layoutParams = btnParams }
+        val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler"); layoutParams = btnParams }
+        val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); layoutParams = btnParams }
+        
+        navLayout.addView(btnSearchTab)
+        navLayout.addView(btnCountriesTab)
+        navLayout.addView(btnFavTab)
 
         listView = ListView(this)
         listAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
@@ -133,18 +140,17 @@ class MainActivity : AppCompatActivity() {
         mainLayout.addView(miniPlayerLayout)
         
         setContentView(mainLayout)
+        updateUIForMode()
 
-        btnSearchTab.setOnClickListener { currentMode = "SEARCH"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; showSearchDialog() }
+        btnSearchTab.setOnClickListener { showSearchDialog() }
         btnCountriesTab.setOnClickListener { 
-            currentMode = "COUNTRIES"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-            if (countries.isEmpty()) loadCountries() 
-            else { 
-                updateList(countries) 
-                stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
-            }
+            currentMode = "COUNTRIES"
+            updateUIForMode()
+            if (countries.isEmpty()) loadCountries() else { updateList(countries); stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
         btnFavTab.setOnClickListener { 
-            currentMode = "FAVORITES"; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; 
+            currentMode = "FAVORITES"
+            updateUIForMode()
             updateList(favorites.map { it.name }) 
             stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
@@ -164,6 +170,54 @@ class MainActivity : AppCompatActivity() {
         controllerFuture.addListener({ player = controllerFuture.get(); setupPlayerListener() }, ContextCompat.getMainExecutor(this))
     }
 
+    private fun updateUIForMode() {
+        when (currentMode) {
+            "MAIN_MENU" -> {
+                navLayout.visibility = View.VISIBLE
+                listView.visibility = View.GONE
+                settingsScroll.visibility = View.GONE
+                supportActionBar?.setDisplayHomeAsUpEnabled(false)
+                supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar")
+            }
+            "SEARCH_RESULTS" -> {
+                navLayout.visibility = View.GONE
+                listView.visibility = View.VISIBLE
+                settingsScroll.visibility = View.GONE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları")
+            }
+            "COUNTRIES" -> {
+                navLayout.visibility = View.GONE
+                listView.visibility = View.VISIBLE
+                settingsScroll.visibility = View.GONE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Страны", "Ülkeler")
+            }
+            "STATIONS_OF_COUNTRY" -> {
+                navLayout.visibility = View.GONE
+                listView.visibility = View.VISIBLE
+                settingsScroll.visibility = View.GONE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = currentCountryName
+            }
+            "FAVORITES" -> {
+                navLayout.visibility = View.GONE
+                listView.visibility = View.VISIBLE
+                settingsScroll.visibility = View.GONE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Избранное", "Favoriler")
+            }
+            "SETTINGS" -> {
+                navLayout.visibility = View.GONE
+                listView.visibility = View.GONE
+                settingsScroll.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Настройки", "Ayarlar")
+            }
+        }
+        invalidateOptionsMenu()
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
         menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
@@ -171,39 +225,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        val showMenu = currentMode != "SETTINGS"
+        val showMenu = currentMode == "MAIN_MENU"
         for (i in 0 until menu.size()) { menu.getItem(i).isVisible = showMenu }
         return super.onPrepareOptionsMenu(menu)
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
-            1 -> openSettings()
+            android.R.id.home -> onBackPressed()
+            1 -> { currentMode = "SETTINGS"; updateUIForMode() }
             2 -> attemptExit()
         }
         return super.onOptionsItemSelected(item)
     }
 
-    private fun openSettings() {
-        if (currentMode == "SETTINGS") return
-        preSettingsMode = currentMode
-        currentMode = "SETTINGS"
-        listView.visibility = View.GONE
-        navLayout.visibility = View.GONE
-        settingsScroll.visibility = View.VISIBLE
-        invalidateOptionsMenu()
-    }
-
     override fun onBackPressed() {
         when (currentMode) {
-            "SETTINGS" -> { 
-                currentMode = preSettingsMode
-                settingsScroll.visibility = View.GONE
-                navLayout.visibility = View.VISIBLE 
-                listView.visibility = View.VISIBLE 
-                invalidateOptionsMenu() 
-            }
-            "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; updateList(countries) }
+            "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; updateUIForMode(); updateList(countries) }
+            "COUNTRIES", "FAVORITES", "SEARCH_RESULTS", "SETTINGS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
             else -> super.onBackPressed()
         }
     }
@@ -219,20 +258,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun attemptExit() {
         if (isRecording) {
-            AlertDialog.Builder(this)
-                .setTitle(getStr("Внимание", "Uyarı"))
-                .setMessage(getStr("Идет запись радио. Остановить запись и выйти?", "Radyo kaydı devam ediyor. Kaydı durdurup çıkılsın mı?"))
-                .setPositiveButton(getStr("Выйти", "Çıkış")) { _, _ ->
-                    isRecording = false
-                    player?.stop()
-                    finishAffinity()
-                }
-                .setNegativeButton(getStr("Отмена", "İptal"), null)
-                .show()
-        } else {
-            player?.stop()
-            finishAffinity()
-        }
+            AlertDialog.Builder(this).setTitle(getStr("Внимание", "Uyarı"))
+                .setMessage(getStr("Идет запись радио. Остановить и выйти?", "Radyo kaydı devam ediyor. Durdurup çıkılsın mı?"))
+                .setPositiveButton(getStr("Выйти", "Çıkış")) { _, _ -> isRecording = false; player?.stop(); finishAffinity() }
+                .setNegativeButton(getStr("Отмена", "İptal"), null).show()
+        } else { player?.stop(); finishAffinity() }
     }
 
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
@@ -417,7 +447,7 @@ class MainActivity : AppCompatActivity() {
     private fun showSearchDialog() {
         val input = EditText(this).apply { hint = getStr("Название", "Adı") }
         AlertDialog.Builder(this).setTitle(getStr("Поиск", "Arama")).setView(input)
-            .setPositiveButton(getStr("Найти", "Bul")) { _, _ -> val q = input.text.toString().trim(); if (q.isNotEmpty()) { currentMode = "SEARCH"; fetchStations("byname/" + URLEncoder.encode(q, "UTF-8")) } }
+            .setPositiveButton(getStr("Найти", "Bul")) { _, _ -> val q = input.text.toString().trim(); if (q.isNotEmpty()) { currentMode = "SEARCH_RESULTS"; updateUIForMode(); fetchStations("byname/" + URLEncoder.encode(q, "UTF-8")) } }
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
@@ -448,7 +478,7 @@ class MainActivity : AppCompatActivity() {
                         stationNameText.text = st.name
                         currentSongMetadata = ""
                         songInfoText.text = ""
-                        stationNameText.announceForAccessibility((if(isTr) "Çalınıyor: " else "Включаю: ") + st.name)
+                        stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + st.name)
                     }
                 }
             }
@@ -472,7 +502,7 @@ class MainActivity : AppCompatActivity() {
         currentSongMetadata = ""
         stationNameText.text = station.name
         songInfoText.text = getStr("Загрузка...", "Yükleniyor...") 
-        stationNameText.announceForAccessibility((if(isTr) "Çalınıyor: " else "Включаю: ") + station.name)
+        stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
         if (!isSamePlaylist || player?.mediaItemCount != playlist.size) {
             val mediaItems = playlist.map { st ->
@@ -482,7 +512,7 @@ class MainActivity : AppCompatActivity() {
             player?.setMediaItems(mediaItems)
         }
         
-        player?.seekToDefaultPosition(index)
+        player?.seekTo(index, 0L)
         player?.prepare() 
         player?.play()
     }
@@ -507,13 +537,9 @@ class MainActivity : AppCompatActivity() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             val res = fetchJson("https://all.api.radio-browser.info/json/stations/$endpoint?limit=200")
-            
             var rawList = ArrayList<JSONObject>()
             for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
-            
-            if (settings.hideDuplicates) {
-                rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList))
-            }
+            if (settings.hideDuplicates) { rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList)) }
             
             stations.clear()
             for (o in rawList) {
@@ -521,7 +547,6 @@ class MainActivity : AppCompatActivity() {
                 val url = if (o.optString("url_resolved").isNotEmpty()) o.optString("url_resolved") else o.optString("url")
                 if (url.isNotEmpty()) stations.add(Station.fromJson(o))
             }
-            
             stations.sortBy { it.name.lowercase(Locale.getDefault()) }
             
             runOnUiThread { 
@@ -546,7 +571,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadStationsByCountry(country: String) {
+        currentCountryName = country
         currentMode = "STATIONS_OF_COUNTRY"
+        updateUIForMode()
         fetchStations("bycountry/" + URLEncoder.encode(country, "UTF-8"))
     }
 
