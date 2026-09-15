@@ -89,7 +89,6 @@ class MainActivity : AppCompatActivity() {
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // Главное меню (кнопки друг под другом)
         navLayout = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -177,7 +176,7 @@ class MainActivity : AppCompatActivity() {
                 listView.visibility = View.GONE
                 settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
-                supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar")
+                supportActionBar?.title = getStr("Радио Плеер", "Radio Player")
             }
             "SEARCH_RESULTS" -> {
                 navLayout.visibility = View.GONE
@@ -477,15 +476,22 @@ class MainActivity : AppCompatActivity() {
                         val st = currentPlaylist[idx]
                         stationNameText.text = st.name
                         currentSongMetadata = ""
-                        songInfoText.text = ""
+                        songInfoText.text = getStr("Загрузка...", "Yükleniyor...")
                         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + st.name)
                     }
+                }
+                
+                // МОЩНАЯ ЗАЩИТА ОТ ОШИБОК: Если станция была сломана, "Следующий" принудительно восстановит плеер
+                if (player?.playbackState == Player.STATE_IDLE || player?.playerError != null) {
+                    player?.prepare()
+                    player?.play()
                 }
             }
             
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
+                songInfoText.text = ""
                 stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
             }
         })
@@ -512,7 +518,7 @@ class MainActivity : AppCompatActivity() {
             player?.setMediaItems(mediaItems)
         }
         
-        player?.seekTo(index, 0L)
+        player?.seekToDefaultPosition(index) // ВЕРНУЛ ПРАВИЛЬНУЮ ФУНКЦИЮ
         player?.prepare() 
         player?.play()
     }
