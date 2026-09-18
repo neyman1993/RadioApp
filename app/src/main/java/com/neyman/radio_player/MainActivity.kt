@@ -61,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var miniPlayerLayout: LinearLayout
 
     private var currentMode = "MAIN_MENU"
+    private var preSettingsMode = "MAIN_MENU"
     private var currentCountryName = ""
     private var isTr = false
     private var currentSongMetadata = ""
@@ -79,6 +80,11 @@ class MainActivity : AppCompatActivity() {
             settings.recFolderUri = uri.toString()
             Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (isGranted) { startRecordingLogic() } 
+        else { Toast.makeText(this, getStr("Нет прав на сохранение", "Kayıt izni verilmedi"), Toast.LENGTH_LONG).show() }
     }
 
     private val exportFavoritesLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -137,7 +143,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // НОВОЕ: Обработчик запроса разрешений
     private val requestMultiplePermissionsLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         var allGranted = true
         permissions.entries.forEach { if (!it.value) allGranted = false }
@@ -155,7 +160,6 @@ class MainActivity : AppCompatActivity() {
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
         
-        // НОВОЕ: Запрашиваем разрешения при старте
         checkAndRequestPermissions()
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -231,10 +235,8 @@ class MainActivity : AppCompatActivity() {
         controllerFuture.addListener({ player = controllerFuture.get(); setupPlayerListener() }, ContextCompat.getMainExecutor(this))
     }
 
-    // НОВОЕ: Функция для проверки и запроса всех необходимых разрешений
     private fun checkAndRequestPermissions() {
         val permissionsToRequest = mutableListOf<String>()
-        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -247,7 +249,6 @@ class MainActivity : AppCompatActivity() {
                 permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
         }
-        
         if (permissionsToRequest.isNotEmpty()) {
             requestMultiplePermissionsLauncher.launch(permissionsToRequest.toTypedArray())
         }
@@ -317,7 +318,8 @@ class MainActivity : AppCompatActivity() {
     override fun onBackPressed() {
         when (currentMode) {
             "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; updateUIForMode(); updateList(countries) }
-            "COUNTRIES", "FAVORITES", "SEARCH_RESULTS", "SETTINGS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
+            "COUNTRIES", "FAVORITES", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
+            "SETTINGS" -> { currentMode = preSettingsMode; updateUIForMode() }
             else -> super.onBackPressed()
         }
     }
@@ -491,8 +493,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, getStr("Запись остановлена", "Kayıt durduruldu"), Toast.LENGTH_SHORT).show()
             return
         }
-        
-        // НОВОЕ: Мы больше не показываем окно выбора, а сразу пишем в Music.
         startRecordingLogic()
     }
 

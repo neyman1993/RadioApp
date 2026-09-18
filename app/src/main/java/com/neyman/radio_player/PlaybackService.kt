@@ -37,24 +37,22 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
         
-        // Создаем кнопки для шторки
         val prevButton = CommandButton.Builder()
             .setDisplayName("Предыдущий")
             .setIconResId(android.R.drawable.ic_media_previous)
-            .setSessionCommand(SessionCommand(SessionCommand.COMMAND_CODE_PLAYER_SEEK_TO_PREVIOUS))
+            .setSessionCommand(SessionCommand("ACTION_PREV", Bundle.EMPTY))
             .build()
             
         val nextButton = CommandButton.Builder()
             .setDisplayName("Следующий")
             .setIconResId(android.R.drawable.ic_media_next)
-            .setSessionCommand(SessionCommand(SessionCommand.COMMAND_CODE_PLAYER_SEEK_TO_NEXT))
+            .setSessionCommand(SessionCommand("ACTION_NEXT", Bundle.EMPTY))
             .build()
             
-        val stopCommand = SessionCommand("ACTION_STOP_APP", Bundle.EMPTY)
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
             .setIconResId(android.R.drawable.ic_menu_close_clear_cancel)
-            .setSessionCommand(stopCommand)
+            .setSessionCommand(SessionCommand("ACTION_STOP_APP", Bundle.EMPTY))
             .build()
 
         val callback = object : MediaSession.Callback {
@@ -64,13 +62,16 @@ class PlaybackService : MediaSessionService() {
                 customCommand: SessionCommand,
                 args: Bundle
             ): ListenableFuture<SessionResult> {
-                if (customCommand.customAction == "ACTION_STOP_APP") {
-                    player.stop()
-                    player.clearMediaItems()
-                    stopSelf()
-                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                when (customCommand.customAction) {
+                    "ACTION_PREV" -> player.seekToPreviousMediaItem()
+                    "ACTION_NEXT" -> player.seekToNextMediaItem()
+                    "ACTION_STOP_APP" -> {
+                        player.stop()
+                        player.clearMediaItems()
+                        stopSelf()
+                    }
                 }
-                return super.onCustomCommand(session, controller, customCommand, args)
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
         }
 
