@@ -97,16 +97,43 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             thread {
                 try {
-                    val json = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: "[]"
-                    val arr = JSONArray(json)
+                    val fileText = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
                     val newFavs = ArrayList<Station>()
-                    for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
-                    runOnUiThread {
-                        favorites.clear()
-                        favorites.addAll(newFavs)
-                        settings.saveFavorites(favorites)
-                        if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
-                        Toast.makeText(this@MainActivity, getStr("Избранное восстановлено", "Favoriler geri yüklendi"), Toast.LENGTH_LONG).show()
+
+                    try {
+                        val arr = JSONArray(fileText)
+                        for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
+                    } catch (e: Exception) {
+                        val cleanText = fileText.replace(Regex("[^a-zA-Z0-9 :./_\\-А-Яа-яЁё]"), " ")
+                        val parts = cleanText.split("name ")
+                        for (part in parts) {
+                            val urlIdx = part.indexOf(" url ")
+                            val urlResIdx = part.indexOf(" url resolved ")
+                            val targetIdx = if (urlIdx != -1) urlIdx else if (urlResIdx != -1) urlResIdx else -1
+                            
+                            if (targetIdx != -1) {
+                                val name = part.substring(0, targetIdx).trim()
+                                val urlMatch = Regex("(https?://\\S+)").find(part)
+                                if (name.isNotEmpty() && urlMatch != null) {
+                                    val urlStr = urlMatch.groupValues[1]
+                                    if (newFavs.none { it.url == urlStr }) {
+                                        newFavs.add(Station(name, urlStr, "Imported"))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (newFavs.isNotEmpty()) {
+                        runOnUiThread {
+                            favorites.clear()
+                            favorites.addAll(newFavs)
+                            settings.saveFavorites(favorites)
+                            if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
+                            Toast.makeText(this@MainActivity, getStr("Избранное восстановлено (${newFavs.size} станций)", "Favoriler geri yüklendi (${newFavs.size})"), Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        runOnUiThread { Toast.makeText(this@MainActivity, getStr("Не удалось распознать станции", "İstasyonlar bulunamadı"), Toast.LENGTH_SHORT).show() }
                     }
                 } catch (e: Exception) { runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка файла", "Dosya hatası"), Toast.LENGTH_SHORT).show() } }
             }
@@ -278,7 +305,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(langSpinner)
 
         addHeader(getStr("Скрывать дубликаты", "Kopyaları Gizle"))
-        val dupSwitch = Switch(this).apply { isChecked = settings.hideDuplicates; setOnCheckedChangeListener { _, is -> settings.hideDuplicates = is } }
+        val dupSwitch = Switch(this).apply { isChecked = settings.hideDuplicates; setOnCheckedChangeListener { _, isCheckedVal -> settings.hideDuplicates = isCheckedVal } }
         layout.addView(dupSwitch)
 
         addHeader(getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"))
@@ -488,7 +515,7 @@ class MainActivity : AppCompatActivity() {
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
-        player?.stop() // ЖЕСТКАЯ ОСТАНОВКА СТАРОЙ СТАНЦИИ
+        player?.stop() 
         
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
