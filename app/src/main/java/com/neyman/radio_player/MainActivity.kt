@@ -168,12 +168,10 @@ class MainActivity : AppCompatActivity() {
             if (position in list.indices) { showStationListMenu(list[position]); true } else false
         }
 
-        Log.d(TAG, "onCreate: Настройка MediaController")
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture.addListener({ 
             player = controllerFuture.get()
-            Log.d(TAG, "onCreate: MediaController успешно подключен")
             setupPlayerListener() 
         }, ContextCompat.getMainExecutor(this))
     }
@@ -181,44 +179,32 @@ class MainActivity : AppCompatActivity() {
     private fun updateUIForMode() {
         when (currentMode) {
             "MAIN_MENU" -> {
-                navLayout.visibility = View.VISIBLE
-                listView.visibility = View.GONE
-                settingsScroll.visibility = View.GONE
+                navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
                 supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar")
             }
             "SEARCH_RESULTS" -> {
-                navLayout.visibility = View.GONE
-                listView.visibility = View.VISIBLE
-                settingsScroll.visibility = View.GONE
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları")
             }
             "COUNTRIES" -> {
-                navLayout.visibility = View.GONE
-                listView.visibility = View.VISIBLE
-                settingsScroll.visibility = View.GONE
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Страны", "Ülkeler")
             }
             "STATIONS_OF_COUNTRY" -> {
-                navLayout.visibility = View.GONE
-                listView.visibility = View.VISIBLE
-                settingsScroll.visibility = View.GONE
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = currentCountryName
             }
             "FAVORITES" -> {
-                navLayout.visibility = View.GONE
-                listView.visibility = View.VISIBLE
-                settingsScroll.visibility = View.GONE
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Избранное", "Favoriler")
             }
             "SETTINGS" -> {
-                navLayout.visibility = View.GONE
-                listView.visibility = View.GONE
-                settingsScroll.visibility = View.VISIBLE
+                navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Настройки", "Ayarlar")
             }
@@ -318,13 +304,11 @@ class MainActivity : AppCompatActivity() {
 
         addHeader(getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"))
         val bitrateSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Любое качество (По умолчанию)", "Herhangi bir kalite (Varsayılan)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Любое качество", "Herhangi bir kalite"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
             val currentBitrate = settings.minBitrate
             setSelection(when(currentBitrate) { 64 -> 1; 128 -> 2; 192 -> 3; 320 -> 4; else -> 0 })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
-                    settings.minBitrate = arrayOf(0, 64, 128, 192, 320)[pos]
-                }
+                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) { settings.minBitrate = arrayOf(0, 64, 128, 192, 320)[pos] }
                 override fun onNothingSelected(p0: AdapterView<*>?) {}
             }
         }
@@ -344,7 +328,37 @@ class MainActivity : AppCompatActivity() {
         addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
         layout.addView(TextView(this).apply { text = getStr("По умолчанию: Музыка / radio_player_recordings", "Varsayılan: Müzik / radio_player_recordings"); textSize = 12f; setPadding(0,0,0,16) })
         layout.addView(Button(this).apply { text = getStr("Выбрать папку вручную", "Klasörü Manuel Seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
+        
+        // НОВАЯ КНОПКА ДЛЯ СОХРАНЕНИЯ ЛОГОВ
+        addHeader(getStr("Отладка", "Hata Ayıklama"))
+        layout.addView(Button(this).apply { 
+            text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet")
+            setOnClickListener { saveLogToFile() }
+        })
+        
         return layout
+    }
+
+    private fun saveLogToFile() {
+        Toast.makeText(this, getStr("Сохраняю лог...", "Günlük kaydediliyor..."), Toast.LENGTH_SHORT).show()
+        thread {
+            try {
+                val process = Runtime.getRuntime().exec("logcat -d -t 1000")
+                val reader = BufferedReader(InputStreamReader(process.inputStream))
+                val log = java.lang.StringBuilder()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) { log.append(line).append("\n") }
+                
+                val fileName = "RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
+                val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
+                if (!rootDir.exists()) rootDir.mkdirs()
+                
+                File(rootDir, fileName).writeText(log.toString())
+                runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен: $fileName", "Günlük kaydedildi: $fileName"), Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка сохранения лога", "Günlük kaydetme hatası"), Toast.LENGTH_SHORT).show() }
+            }
+        }
     }
 
     private fun showMiniPlayerMenu() {
@@ -460,77 +474,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupPlayerListener() {
-        player?.repeatMode = Player.REPEAT_MODE_ALL
         player?.addListener(object : Player.Listener {
-            
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_IDLE -> Log.d(TAG, "ExoPlayer: STATE_IDLE (остановлен или ошибка)")
-                    Player.STATE_BUFFERING -> Log.d(TAG, "ExoPlayer: STATE_BUFFERING (буферизация)")
-                    Player.STATE_READY -> Log.d(TAG, "ExoPlayer: STATE_READY (готов играть)")
-                    Player.STATE_ENDED -> Log.d(TAG, "ExoPlayer: STATE_ENDED (закончился плейлист)")
-                }
-            }
-
-            override fun onIsPlayingChanged(isPlaying: Boolean) { 
-                Log.d(TAG, "ExoPlayer: isPlayingChanged = $isPlaying")
-                btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") 
-            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
-                Log.d(TAG, "ExoPlayer: onMediaMetadataChanged -> artist: $artist, title: $title")
                 val info = if (artist.isNotEmpty() && title.isNotEmpty()) "$artist - $title" else title
                 if (info.isNotEmpty() && artist != "Радио" && artist != "Radyo") { 
                     currentSongMetadata = info; songInfoText.text = info; songInfoText.announceForAccessibility(info) 
                 }
             }
             
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = player?.currentMediaItemIndex ?: -1
-                Log.d(TAG, "ExoPlayer: onMediaItemTransition -> index: $idx, URL: ${mediaItem?.mediaId}")
-                
-                if (idx != -1 && currentPlaylist.isNotEmpty() && idx < currentPlaylist.size) {
-                    if (currentStationIndex != idx) {
-                        if (isRecording) {
-                            isRecording = false
-                            Toast.makeText(this@MainActivity, getStr("Запись остановлена (смена станции)", "Kayıt durduruldu (istasyon değişti)"), Toast.LENGTH_SHORT).show()
-                        }
-                        currentStationIndex = idx
-                        val st = currentPlaylist[idx]
-                        stationNameText.text = st.name
-                        currentSongMetadata = ""
-                        songInfoText.text = getStr("Загрузка...", "Yükleniyor...")
-                        stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + st.name)
-                    }
-                }
-                
-                if (player?.playbackState == Player.STATE_IDLE || player?.playerError != null) {
-                    Log.d(TAG, "ExoPlayer: принудительный сброс ошибки через prepare()")
-                    player?.prepare()
-                    player?.play()
-                }
-            }
-            
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                Log.e(TAG, "ExoPlayer ERROR: код ${error.errorCode}, сообщение: ${error.message}", error)
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
                 songInfoText.text = ""
-                stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
+                stationNameText.announceForAccessibility(getStr("Ошибка", "Hata"))
             }
         })
     }
 
     private fun playStation(index: Int, playlist: List<Station>) {
-        if (playlist.isEmpty() || index !in playlist.indices) {
-            Log.e(TAG, "playStation ERROR: плейлист пуст или неверный индекс ($index)")
-            return
-        }
+        if (playlist.isEmpty() || index !in playlist.indices) return
         
-        Log.d(TAG, "playStation вызван: индекс $index, URL: ${playlist[index].url}")
-        val isSamePlaylist = (currentPlaylist.size == playlist.size && currentPlaylist.isNotEmpty() && currentPlaylist[0].url == playlist[0].url)
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
         
@@ -540,86 +507,69 @@ class MainActivity : AppCompatActivity() {
         songInfoText.text = getStr("Загрузка...", "Yükleniyor...") 
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
-        if (!isSamePlaylist || player?.mediaItemCount != playlist.size) {
-            Log.d(TAG, "playStation: загружаем новый плейлист в ExoPlayer (размер ${playlist.size})")
-            val mediaItems = playlist.map { st ->
-                val meta = MediaMetadata.Builder().setTitle(st.name).setArtist(if(isTr) "Radyo" else "Радио").build()
-                MediaItem.Builder().setMediaId(st.url).setUri(st.url).setMediaMetadata(meta).build()
-            }
-            player?.setMediaItems(mediaItems)
-        } else {
-            Log.d(TAG, "playStation: плейлист тот же, просто меняем индекс")
-        }
+        // ИСПРАВЛЕНИЕ: Возвращаем метод отправки ОДНОЙ станции за раз (как было в работающей первой версии)
+        val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
+        val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
         
-        Log.d(TAG, "playStation: seekToDefaultPosition($index) и prepare()")
-        player?.seekToDefaultPosition(index) 
+        player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
     }
 
     private fun togglePlayPause() {
-        Log.d(TAG, "togglePlayPause: текущее состояние isPlaying = ${player?.isPlaying}")
         if (player?.isPlaying == true) player?.pause() else player?.play()
     }
 
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
         val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
-        Log.d(TAG, "playNext: переключаем на $nextIdx")
         playStation(nextIdx, currentPlaylist)
     }
 
     private fun playPrev() {
         if (currentPlaylist.isEmpty()) return
         val prevIdx = if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1
-        Log.d(TAG, "playPrev: переключаем на $prevIdx")
         playStation(prevIdx, currentPlaylist)
     }
 
     private fun fetchStations(endpoint: String) {
-        Log.d(TAG, "fetchStations: начало запроса $endpoint")
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
-            val res = fetchJson("https://all.api.radio-browser.info/json/stations/$endpoint?limit=200")
-            Log.d(TAG, "fetchStations: получено ${res.length()} записей от API")
-            
-            var rawList = ArrayList<JSONObject>()
-            for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
-            
-            if (settings.hideDuplicates) { 
-                rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList))
-                Log.d(TAG, "fetchStations: после скрытия дубликатов осталось ${rawList.size}")
-            }
-            
-            stations.clear()
-            for (o in rawList) {
-                if (o.optInt("bitrate", 0) < settings.minBitrate) continue
-                val url = if (o.optString("url_resolved").isNotEmpty()) o.optString("url_resolved") else o.optString("url")
-                if (url.isNotEmpty()) stations.add(Station.fromJson(o))
-            }
-            stations.sortBy { it.name.lowercase(Locale.getDefault()) }
-            
-            Log.d(TAG, "fetchStations: финальный список готов, размер ${stations.size}")
-            runOnUiThread { 
-                updateList(stations.map { it.name }) 
-                stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
-            }
+            try {
+                val res = fetchJson("https://all.api.radio-browser.info/json/stations/$endpoint?limit=200")
+                var rawList = ArrayList<JSONObject>()
+                for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
+                if (settings.hideDuplicates) { rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList)) }
+                
+                stations.clear()
+                for (o in rawList) {
+                    if (o.optInt("bitrate", 0) < settings.minBitrate) continue
+                    val url = if (o.optString("url_resolved").isNotEmpty()) o.optString("url_resolved") else o.optString("url")
+                    if (url.isNotEmpty()) stations.add(Station.fromJson(o))
+                }
+                stations.sortBy { it.name.lowercase(Locale.getDefault()) }
+                
+                runOnUiThread { 
+                    updateList(stations.map { it.name }) 
+                    stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
+                }
+            } catch (e: Exception) { Log.e(TAG, "Ошибка поиска станций", e) }
         }
     }
 
     private fun loadCountries() {
-        Log.d(TAG, "loadCountries: начало загрузки")
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
-            val res = fetchJson("https://all.api.radio-browser.info/json/countries")
-            countries.clear()
-            for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
-            countries.sort(); 
-            Log.d(TAG, "loadCountries: стран загружено ${countries.size}")
-            runOnUiThread { 
-                updateList(countries) 
-                stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
-            }
+            try {
+                val res = fetchJson("https://all.api.radio-browser.info/json/countries")
+                countries.clear()
+                for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
+                countries.sort(); 
+                runOnUiThread { 
+                    updateList(countries) 
+                    stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
+                }
+            } catch (e: Exception) { Log.e(TAG, "Ошибка загрузки стран", e) }
         }
     }
 
@@ -631,13 +581,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchJson(url: String): JSONArray {
-        return try {
-            val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=10000; readTimeout=10000; setRequestProperty("User-Agent", "radio_player") }
-            JSONArray(c.inputStream.bufferedReader().use { it.readText() })
-        } catch (e: Exception) { 
-            Log.e(TAG, "fetchJson ERROR: ${e.message}", e)
-            JSONArray() 
-        }
+        val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=10000; readTimeout=10000; setRequestProperty("User-Agent", "radio_player") }
+        return JSONArray(c.inputStream.bufferedReader().use { it.readText() })
     }
 
     private fun updateList(items: List<String>) { listAdapter.clear(); listAdapter.addAll(items); listAdapter.notifyDataSetChanged() }
