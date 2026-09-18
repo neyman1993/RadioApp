@@ -35,7 +35,6 @@ class PlaybackService : MediaSessionService() {
                 bufferSec * 1000
             ).build()
 
-        // Усиленный интернет-движок для капризных потоков (как Mydonose)
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
@@ -49,6 +48,7 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
         
+        // Кнопки для панели уведомлений и экрана блокировки
         val prevButton = CommandButton.Builder()
             .setDisplayName("Предыдущий")
             .setIconResId(android.R.drawable.ic_media_previous)

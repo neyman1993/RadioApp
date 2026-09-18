@@ -20,7 +20,6 @@ import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
-import androidx.appcompat.widget.Toolbar
 import androidx.core.content.ContextCompat
 import androidx.core.os.LocaleListCompat
 import androidx.media3.common.MediaItem
@@ -61,7 +60,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPlayPause: Button
     private lateinit var miniPlayerLayout: LinearLayout
     private lateinit var folderDisplay: TextView
-    private lateinit var myToolbar: Toolbar
 
     private var currentMode = "MAIN_MENU"
     private var preSettingsMode = "MAIN_MENU"
@@ -81,7 +79,7 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             settings.recFolderUri = uri.toString()
-            folderDisplay.text = getStr("Выбрана папка для сохранения", "Kayıt için klasör seçildi")
+            folderDisplay.text = getStr("Выбрана своя папка", "Özel klasör seçildi")
             Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
         }
     }
@@ -117,31 +115,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Идеальный декодер для PKL файлов
     private val importFavoritesLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             thread {
                 try {
-                    val fileText = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                    val bytes = contentResolver.openInputStream(uri)?.readBytes() ?: return@thread
+                    val fileText = String(bytes, Charsets.UTF_8)
                     val newFavs = ArrayList<Station>()
 
                     try {
                         val arr = JSONArray(fileText)
                         for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
                     } catch (e: Exception) {
-                        // Мощный парсер для файла PKL
-                        val urlRegex = Regex("(https?://[\\w./_\\-?=&:%]+)")
-                        val matches = urlRegex.findAll(fileText)
-                        for (match in matches) {
-                            val url = match.value
-                            val idx = match.range.first
-                            val start = maxOf(0, idx - 150)
-                            val snippet = fileText.substring(start, idx)
+                        // Распарсим Pickle файл, ища ключи "name" и "url_resolved" или "url"
+                        val urlRegex = Regex("(https?://[a-zA-Z0-9./_\\-?=&:%]+)")
+                        val parts = fileText.split(Regex("name[Ф\\s]+М|name[\\s]+"))
+                        
+                        for (i in 1 until parts.size) {
+                            val part = parts[i]
+                            val nameMatch = Regex("^([\\p{L}\\p{N}\\s\\-.]+)").find(part.replace("Ф", " "))
+                            var name = nameMatch?.value?.trim() ?: ""
+                            if (name.isEmpty() || name.length < 2) continue
                             
-                            val nameMatch = Regex("name[^\\p{L}\\p{N}]+([\\p{L}\\p{N}\\s\\-._]+)").find(snippet)
-                            val name = nameMatch?.groupValues?.get(1)?.trim()?.replace(Regex("[^\\p{L}\\p{N}\\s\\-.]"), "") ?: "Unknown Station"
-                            
-                            if (name.length > 1 && newFavs.none { it.url == url }) {
-                                newFavs.add(Station(name, url, "Imported"))
+                            val urlMatch = urlRegex.find(part)
+                            if (urlMatch != null) {
+                                val urlStr = urlMatch.value
+                                if (newFavs.none { it.url == urlStr }) {
+                                    newFavs.add(Station(name, urlStr, "Imported"))
+                                }
                             }
                         }
                     }
@@ -182,14 +184,6 @@ class MainActivity : AppCompatActivity() {
         if (permissionsToRequest.isNotEmpty()) requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-
-        // Добавляем встроенный Toolbar, чтобы меню всегда отображалось
-        myToolbar = Toolbar(this).apply {
-            setBackgroundColor(Color.parseColor("#1f1f1f"))
-            setTitleTextColor(Color.WHITE)
-        }
-        mainLayout.addView(myToolbar)
-        setSupportActionBar(myToolbar)
 
         navLayout = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(48, 48, 48, 48)
@@ -399,9 +393,9 @@ class MainActivity : AppCompatActivity() {
 
         addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
         val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("По умолчанию: Music / radio_player_recordings", "Varsayılan: Music / radio_player_recordings")
-        folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 12f; setPadding(0,0,0,16) }
+        folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 14f; setPadding(0,0,0,16) }
         layout.addView(folderDisplay)
-        layout.addView(Button(this).apply { text = getStr("Выбрать папку вручную", "Klasörü Manuel Seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
+        layout.addView(Button(this).apply { text = getStr("Выбрать другую папку вручную", "Başka bir klasörü manuel seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
         
         addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
         val backupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -453,8 +447,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun copySongMetadata(station: Station) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val isCurrentPlaying = (currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url)
-        val textToCopy = if (isCurrentPlaying && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        val textToCopy = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
         clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
         Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
     }
@@ -514,7 +507,7 @@ class MainActivity : AppCompatActivity() {
                 
                 val buffer = ByteArray(8192); var bytesRead = 0
                 while (isRecording && input?.read(buffer).also { bytesRead = it ?: -1 } != -1) { out?.write(buffer, 0, bytesRead) }
-            } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи. Проверьте путь.", "Kayıt hatası. Klasörü kontrol edin."), Toast.LENGTH_LONG).show() } }
+            } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи.", "Kayıt hatası."), Toast.LENGTH_LONG).show() } }
             finally { try { out?.close() } catch (e: Exception) {}; try { input?.close() } catch (e: Exception) {}; isRecording = false }
         }
     }
@@ -609,7 +602,9 @@ class MainActivity : AppCompatActivity() {
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
+        // ЖЕСТКИЙ СТОП ДЛЯ ПРЕДОТВРАЩЕНИЯ НАЛОЖЕНИЯ
         player?.stop() 
+        player?.clearMediaItems()
         metadataTimer?.cancel()
         currentSongMetadata = ""
         
