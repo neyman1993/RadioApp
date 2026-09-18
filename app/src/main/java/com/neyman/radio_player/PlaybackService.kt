@@ -73,6 +73,21 @@ class PlaybackService : MediaSessionService() {
                 }
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
+            
+            // Заставляем Android показывать кнопки на экране блокировки
+            override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                val connectionResult = super.onConnect(session, controller)
+                val availableSessionCommands = connectionResult.availableSessionCommands.buildUpon()
+                    .add(SessionCommand("ACTION_PREV", Bundle.EMPTY))
+                    .add(SessionCommand("ACTION_NEXT", Bundle.EMPTY))
+                    .add(SessionCommand("ACTION_STOP_APP", Bundle.EMPTY))
+                    .build()
+                
+                return MediaSession.ConnectionResult.accept(
+                    availableSessionCommands,
+                    connectionResult.availablePlayerCommands
+                )
+            }
         }
 
         mediaSession = MediaSession.Builder(this, player)
