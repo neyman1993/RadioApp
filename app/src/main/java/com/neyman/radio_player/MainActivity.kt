@@ -1,9 +1,7 @@
 package com.neyman.radio_player
 
-import android.Manifest
 import android.app.AlertDialog
 import android.content.*
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -56,7 +54,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsScroll: ScrollView
     private lateinit var listAdapter: ArrayAdapter<String>
     private lateinit var stationNameText: TextView
-    private lateinit var songInfoText: TextView
     private lateinit var btnPlayPause: Button
 
     private var currentMode = "MAIN_MENU"
@@ -73,18 +70,44 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             settings.recFolderUri = uri.toString()
-            Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getStr("Папка успешно выбрана", "Klasör başarıyla seçildi"), Toast.LENGTH_SHORT).show()
         }
     }
 
-    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) { startRecordingLogic() } 
-        else { Toast.makeText(this, getStr("Нет прав на сохранение", "Kayıt izni verilmedi"), Toast.LENGTH_LONG).show() }
+    private val exportFavoritesLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            thread {
+                try {
+                    val json = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE).getString("favorites_json", "[]") ?: "[]"
+                    contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Избранное успешно сохранено", "Favoriler başarıyla dışa aktarıldı"), Toast.LENGTH_LONG).show() }
+                } catch (e: Exception) { runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка", "Hata"), Toast.LENGTH_SHORT).show() } }
+            }
+        }
+    }
+
+    private val importFavoritesLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            thread {
+                try {
+                    val json = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: "[]"
+                    val arr = JSONArray(json)
+                    val newFavs = ArrayList<Station>()
+                    for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
+                    runOnUiThread {
+                        favorites.clear()
+                        favorites.addAll(newFavs)
+                        settings.saveFavorites(favorites)
+                        if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
+                        Toast.makeText(this@MainActivity, getStr("Избранное восстановлено", "Favoriler geri yüklendi"), Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Exception) { runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка файла", "Dosya hatası"), Toast.LENGTH_SHORT).show() } }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d(TAG, "onCreate: Приложение запущено")
         
         settings = SettingsManager(this)
         settings.applySettings()
@@ -94,9 +117,7 @@ class MainActivity : AppCompatActivity() {
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         navLayout = LinearLayout(this).apply { 
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(48, 48, 48, 48)
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(48, 48, 48, 48)
         }
         val btnParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 16, 0, 16) }
         
@@ -104,9 +125,7 @@ class MainActivity : AppCompatActivity() {
         val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler"); layoutParams = btnParams }
         val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); layoutParams = btnParams }
         
-        navLayout.addView(btnSearchTab)
-        navLayout.addView(btnCountriesTab)
-        navLayout.addView(btnFavTab)
+        navLayout.addView(btnSearchTab); navLayout.addView(btnCountriesTab); navLayout.addView(btnFavTab)
 
         listView = ListView(this)
         listAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
@@ -120,22 +139,21 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#333333"))
         }
 
+        // ОБЪЕДИНЕННЫЙ ТЕКСТ: Только один TextView для плеера
         stationNameText = TextView(this).apply {
             text = getStr("Радио не выбрано", "Radyo seçilmedi")
-            textSize = 18f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
+            textSize = 16f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER; setPadding(0, 0, 0, 16)
             isFocusable = true; setOnClickListener { showMiniPlayerMenu() }
-        }
-        songInfoText = TextView(this).apply {
-            text = ""; textSize = 14f; setTextColor(Color.LTGRAY); setPadding(0, 8, 0, 16)
         }
         
         val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        val btnPrevBtn = Button(this).apply { text = getStr("Пред", "Önceki"); setOnClickListener { playPrev() } }
+        val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); setOnClickListener { playPrev() } }
         btnPlayPause = Button(this).apply { text = getStr("Плей", "Oynat"); setOnClickListener { togglePlayPause() } }
-        val btnNextBtn = Button(this).apply { text = getStr("След", "Sonraki"); setOnClickListener { playNext() } }
+        val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); setOnClickListener { playNext() } }
         
         controlsLayout.addView(btnPrevBtn); controlsLayout.addView(btnPlayPause); controlsLayout.addView(btnNextBtn)
-        miniPlayerLayout.addView(stationNameText); miniPlayerLayout.addView(songInfoText); miniPlayerLayout.addView(controlsLayout)
+        miniPlayerLayout.addView(stationNameText); miniPlayerLayout.addView(controlsLayout)
 
         mainLayout.addView(navLayout)
         mainLayout.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -147,15 +165,12 @@ class MainActivity : AppCompatActivity() {
 
         btnSearchTab.setOnClickListener { showSearchDialog() }
         btnCountriesTab.setOnClickListener { 
-            currentMode = "COUNTRIES"
-            updateUIForMode()
+            currentMode = "COUNTRIES"; updateUIForMode()
             if (countries.isEmpty()) loadCountries() else { updateList(countries); stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
         btnFavTab.setOnClickListener { 
-            currentMode = "FAVORITES"
-            updateUIForMode()
-            updateList(favorites.map { it.name }) 
-            stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
+            currentMode = "FAVORITES"; updateUIForMode()
+            updateList(favorites.map { it.name }); stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
 
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -170,51 +185,23 @@ class MainActivity : AppCompatActivity() {
 
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
-        controllerFuture.addListener({ 
-            player = controllerFuture.get()
-            setupPlayerListener() 
-        }, ContextCompat.getMainExecutor(this))
+        controllerFuture.addListener({ player = controllerFuture.get(); setupPlayerListener() }, ContextCompat.getMainExecutor(this))
     }
 
     private fun updateUIForMode() {
         when (currentMode) {
-            "MAIN_MENU" -> {
-                navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
-                supportActionBar?.setDisplayHomeAsUpEnabled(false)
-                supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar")
-            }
-            "SEARCH_RESULTS" -> {
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-                supportActionBar?.setDisplayHomeAsUpEnabled(true)
-                supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları")
-            }
-            "COUNTRIES" -> {
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-                supportActionBar?.setDisplayHomeAsUpEnabled(true)
-                supportActionBar?.title = getStr("Страны", "Ülkeler")
-            }
-            "STATIONS_OF_COUNTRY" -> {
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-                supportActionBar?.setDisplayHomeAsUpEnabled(true)
-                supportActionBar?.title = currentCountryName
-            }
-            "FAVORITES" -> {
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-                supportActionBar?.setDisplayHomeAsUpEnabled(true)
-                supportActionBar?.title = getStr("Избранное", "Favoriler")
-            }
-            "SETTINGS" -> {
-                navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
-                supportActionBar?.setDisplayHomeAsUpEnabled(true)
-                supportActionBar?.title = getStr("Настройки", "Ayarlar")
-            }
+            "MAIN_MENU" -> { navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(false); supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar") }
+            "SEARCH_RESULTS" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları") }
+            "COUNTRIES" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Страны", "Ülkeler") }
+            "STATIONS_OF_COUNTRY" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = currentCountryName }
+            "FAVORITES" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Избранное", "Favoriler") }
+            "SETTINGS" -> { navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Настройки", "Ayarlar") }
         }
         invalidateOptionsMenu()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
-        menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
         return super.onCreateOptionsMenu(menu)
     }
 
@@ -228,7 +215,6 @@ class MainActivity : AppCompatActivity() {
         when (item.itemId) {
             android.R.id.home -> onBackPressed()
             1 -> { currentMode = "SETTINGS"; updateUIForMode() }
-            2 -> attemptExit()
         }
         return super.onOptionsItemSelected(item)
     }
@@ -250,15 +236,6 @@ class MainActivity : AppCompatActivity() {
         return super.onKeyDown(keyCode, event)
     }
 
-    private fun attemptExit() {
-        if (isRecording) {
-            AlertDialog.Builder(this).setTitle(getStr("Внимание", "Uyarı"))
-                .setMessage(getStr("Идет запись радио. Остановить и выйти?", "Radyo kaydı devam ediyor. Durdurup çıkılsın mı?"))
-                .setPositiveButton(getStr("Выйти", "Çıkış")) { _, _ -> isRecording = false; player?.stop(); finishAffinity() }
-                .setNegativeButton(getStr("Отмена", "İptal"), null).show()
-        } else { player?.stop(); finishAffinity() }
-    }
-
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
     private fun createSettingsLayout(): LinearLayout {
@@ -268,12 +245,11 @@ class MainActivity : AppCompatActivity() {
         addHeader(getStr("Тема оформления", "Tema"))
         val themeSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Системная", "Sistem"), getStr("Светлая", "Açık"), getStr("Темная", "Koyu")))
-            val t = settings.getTheme()
-            setSelection(if (t == "light") 1 else if (t == "dark") 2 else 0)
+            setSelection(when (settings.getTheme()) { "light" -> 1; "dark" -> 2; else -> 0 })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
                     val newTheme = arrayOf("system", "light", "dark")[pos]
-                    if (newTheme != t) { settings.saveTheme(newTheme); settings.applySettings() }
+                    if (newTheme != settings.getTheme()) { settings.saveTheme(newTheme); settings.applySettings() }
                 }
                 override fun onNothingSelected(p0: AdapterView<*>?) {}
             }
@@ -283,12 +259,11 @@ class MainActivity : AppCompatActivity() {
         addHeader(getStr("Язык приложения", "Uygulama Dili"))
         val langSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Системный", "Sistem"), "Русский", "Türkçe"))
-            val l = settings.getLanguage()
-            setSelection(if (l == "ru") 1 else if (l == "tr") 2 else 0)
+            setSelection(when (settings.getLanguage()) { "ru" -> 1; "tr" -> 2; else -> 0 })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
                     val newLang = arrayOf("system", "ru", "tr")[pos]
-                    if (newLang != l) { settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang)) }
+                    if (newLang != settings.getLanguage()) { settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang)) }
                 }
                 override fun onNothingSelected(p0: AdapterView<*>?) {}
             }
@@ -296,17 +271,13 @@ class MainActivity : AppCompatActivity() {
         layout.addView(langSpinner)
 
         addHeader(getStr("Скрывать дубликаты", "Kopyaları Gizle"))
-        val dupSwitch = Switch(this).apply {
-            isChecked = settings.hideDuplicates
-            setOnCheckedChangeListener { _, isChecked -> settings.hideDuplicates = isChecked }
-        }
+        val dupSwitch = Switch(this).apply { isChecked = settings.hideDuplicates; setOnCheckedChangeListener { _, is -> settings.hideDuplicates = is } }
         layout.addView(dupSwitch)
 
         addHeader(getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"))
         val bitrateSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Любое качество", "Herhangi bir kalite"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
-            val currentBitrate = settings.minBitrate
-            setSelection(when(currentBitrate) { 64 -> 1; 128 -> 2; 192 -> 3; 320 -> 4; else -> 0 })
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("По умолчанию (то что дает сервер)", "Varsayılan (sunucunun sağladığı)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
+            setSelection(when(settings.minBitrate) { 64 -> 1; 128 -> 2; 192 -> 3; 320 -> 4; else -> 0 })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) { settings.minBitrate = arrayOf(0, 64, 128, 192, 320)[pos] }
                 override fun onNothingSelected(p0: AdapterView<*>?) {}
@@ -326,15 +297,17 @@ class MainActivity : AppCompatActivity() {
         layout.addView(formatSpinner)
 
         addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
-        layout.addView(TextView(this).apply { text = getStr("По умолчанию: Музыка / radio_player_recordings", "Varsayılan: Müzik / radio_player_recordings"); textSize = 12f; setPadding(0,0,0,16) })
+        layout.addView(TextView(this).apply { text = getStr("Если не выбрана, система запросит доступ при первой записи.", "Seçilmezse, sistem ilk kayıtta erişim ister."); textSize = 12f; setPadding(0,0,0,16) })
         layout.addView(Button(this).apply { text = getStr("Выбрать папку вручную", "Klasörü Manuel Seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
         
-        // НОВАЯ КНОПКА ДЛЯ СОХРАНЕНИЯ ЛОГОВ
+        addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
+        val backupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        backupLayout.addView(Button(this).apply { text = getStr("Экспорт", "Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportFavoritesLauncher.launch("radio_favorites.json") } })
+        backupLayout.addView(Button(this).apply { text = getStr("Импорт", "İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { importFavoritesLauncher.launch(arrayOf("*/*")) } })
+        layout.addView(backupLayout)
+        
         addHeader(getStr("Отладка", "Hata Ayıklama"))
-        layout.addView(Button(this).apply { 
-            text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet")
-            setOnClickListener { saveLogToFile() }
-        })
+        layout.addView(Button(this).apply { text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet"); setOnClickListener { saveLogToFile() } })
         
         return layout
     }
@@ -352,12 +325,9 @@ class MainActivity : AppCompatActivity() {
                 val fileName = "RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
                 val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
                 if (!rootDir.exists()) rootDir.mkdirs()
-                
                 File(rootDir, fileName).writeText(log.toString())
-                runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен: $fileName", "Günlük kaydedildi: $fileName"), Toast.LENGTH_LONG).show() }
-            } catch (e: Exception) {
-                runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка сохранения лога", "Günlük kaydetme hatası"), Toast.LENGTH_SHORT).show() }
-            }
+                runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен: $fileName", "Günlük kaydedildi"), Toast.LENGTH_LONG).show() }
+            } catch (e: Exception) {}
         }
     }
 
@@ -394,7 +364,6 @@ class MainActivity : AppCompatActivity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val isCurrentPlaying = (currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url)
         val textToCopy = if (isCurrentPlaying && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
-        
         clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
         Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
     }
@@ -426,12 +395,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (settings.recFolderUri.isEmpty() && Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                return
-            }
+        // ЗАПРОС ПАПКИ, ЕСЛИ НЕ ВЫБРАНА
+        if (settings.recFolderUri.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(getStr("Выбор папки", "Klasör Seçimi"))
+                .setMessage(getStr("Пожалуйста, выберите папку на телефоне, куда будут сохраняться записанные треки.", "Lütfen kaydedilen parçaların kaydedileceği klasörü seçin."))
+                .setPositiveButton("OK") { _, _ -> folderPickerLauncher.launch(null) }
+                .setNegativeButton(getStr("Отмена", "İptal"), null)
+                .show()
+            return
         }
+        
         startRecordingLogic()
     }
 
@@ -453,15 +427,10 @@ class MainActivity : AppCompatActivity() {
                     val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
                     val newFileUri = DocumentsContract.createDocument(contentResolver, docUri, "audio/*", fileName)
                     out = newFileUri?.let { contentResolver.openOutputStream(it) }
-                } else {
-                    val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
-                    if (!rootDir.exists()) rootDir.mkdirs()
-                    out = FileOutputStream(File(rootDir, fileName))
-                }
-                
+                } 
                 val buffer = ByteArray(8192); var bytesRead = 0
-                while (isRecording && input.read(buffer).also { bytesRead = it } != -1) { out?.write(buffer, 0, bytesRead) }
-            } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка. Выберите папку вручную.", "Hata. Klasörü manuel seçin."), Toast.LENGTH_LONG).show() } }
+                while (isRecording && input?.read(buffer).also { bytesRead = it ?: -1 } != -1) { out?.write(buffer, 0, bytesRead) }
+            } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи. Проверьте путь.", "Kayıt hatası. Klasörü kontrol edin."), Toast.LENGTH_LONG).show() } }
             finally { try { out?.close() } catch (e: Exception) {}; try { input?.close() } catch (e: Exception) {}; isRecording = false }
         }
     }
@@ -481,16 +450,40 @@ class MainActivity : AppCompatActivity() {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
                 val info = if (artist.isNotEmpty() && title.isNotEmpty()) "$artist - $title" else title
+                
                 if (info.isNotEmpty() && artist != "Радио" && artist != "Radyo") { 
-                    currentSongMetadata = info; songInfoText.text = info; songInfoText.announceForAccessibility(info) 
+                    currentSongMetadata = info
+                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                    stationNameText.text = "$stName\n$info"
+                    stationNameText.announceForAccessibility(info) 
+                }
+            }
+            
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                val idx = player?.currentMediaItemIndex ?: -1
+                if (idx != -1 && currentPlaylist.isNotEmpty() && idx < currentPlaylist.size) {
+                    if (currentStationIndex != idx) {
+                        if (isRecording) {
+                            isRecording = false
+                            Toast.makeText(this@MainActivity, getStr("Запись остановлена (смена станции)", "Kayıt durduruldu (istasyon değişti)"), Toast.LENGTH_SHORT).show()
+                        }
+                        currentStationIndex = idx
+                        val st = currentPlaylist[idx]
+                        stationNameText.text = st.name
+                        currentSongMetadata = ""
+                        stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + st.name)
+                    }
+                }
+                
+                if (player?.playbackState == Player.STATE_IDLE || player?.playerError != null) {
+                    player?.prepare(); player?.play()
                 }
             }
             
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
-                songInfoText.text = ""
-                stationNameText.announceForAccessibility(getStr("Ошибка", "Hata"))
+                stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
             }
         })
     }
@@ -498,20 +491,26 @@ class MainActivity : AppCompatActivity() {
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
+        val isSamePlaylist = (currentPlaylist.size == playlist.size && currentPlaylist.isNotEmpty() && currentPlaylist[0].url == playlist[0].url)
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
         
         val station = currentPlaylist[index]
         currentSongMetadata = ""
         stationNameText.text = station.name
-        songInfoText.text = getStr("Загрузка...", "Yükleniyor...") 
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
-        // ИСПРАВЛЕНИЕ: Возвращаем метод отправки ОДНОЙ станции за раз (как было в работающей первой версии)
-        val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
-        val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
+        // Загружаем весь список для работы кнопок в шторке
+        if (!isSamePlaylist || player?.mediaItemCount != playlist.size) {
+            val mediaItems = playlist.map { st ->
+                val meta = MediaMetadata.Builder().setTitle(st.name).build()
+                MediaItem.Builder().setMediaId(st.url).setUri(st.url).setMediaMetadata(meta).build()
+            }
+            player?.setMediaItems(mediaItems, index, androidx.media3.common.C.TIME_UNSET)
+        } else {
+            player?.seekToDefaultPosition(index)
+        }
         
-        player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
     }
@@ -548,12 +547,11 @@ class MainActivity : AppCompatActivity() {
                     if (url.isNotEmpty()) stations.add(Station.fromJson(o))
                 }
                 stations.sortBy { it.name.lowercase(Locale.getDefault()) }
-                
                 runOnUiThread { 
                     updateList(stations.map { it.name }) 
                     stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
                 }
-            } catch (e: Exception) { Log.e(TAG, "Ошибка поиска станций", e) }
+            } catch (e: Exception) {}
         }
     }
 
@@ -569,7 +567,7 @@ class MainActivity : AppCompatActivity() {
                     updateList(countries) 
                     stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
                 }
-            } catch (e: Exception) { Log.e(TAG, "Ошибка загрузки стран", e) }
+            } catch (e: Exception) {}
         }
     }
 
@@ -581,8 +579,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchJson(url: String): JSONArray {
-        val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=10000; readTimeout=10000; setRequestProperty("User-Agent", "radio_player") }
-        return JSONArray(c.inputStream.bufferedReader().use { it.readText() })
+        return try {
+            val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=10000; readTimeout=10000; setRequestProperty("User-Agent", "radio_player") }
+            JSONArray(c.inputStream.bufferedReader().use { it.readText() })
+        } catch (e: Exception) { JSONArray() }
     }
 
     private fun updateList(items: List<String>) { listAdapter.clear(); listAdapter.addAll(items); listAdapter.notifyDataSetChanged() }
