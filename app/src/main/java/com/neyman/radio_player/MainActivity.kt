@@ -20,6 +20,7 @@ import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.appcompat.widget.Toolbar
 import androidx.core.content.ContextCompat
 import androidx.core.os.LocaleListCompat
 import androidx.media3.common.MediaItem
@@ -59,6 +60,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stationNameText: TextView
     private lateinit var btnPlayPause: Button
     private lateinit var miniPlayerLayout: LinearLayout
+    private lateinit var folderDisplay: TextView
+    private lateinit var myToolbar: Toolbar
 
     private var currentMode = "MAIN_MENU"
     private var preSettingsMode = "MAIN_MENU"
@@ -74,11 +77,31 @@ class MainActivity : AppCompatActivity() {
     private var metadataTimer: Timer? = null
     private var currentStreamUrlForMetadata = ""
 
-    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-        var allGranted = true
-        permissions.entries.forEach { if (!it.value) allGranted = false }
-        if (!allGranted) {
-            Toast.makeText(this, getStr("Некоторые разрешения не предоставлены.", "Bazı izinler verilmedi."), Toast.LENGTH_LONG).show()
+    private val folderPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            settings.recFolderUri = uri.toString()
+            folderDisplay.text = getStr("Выбрана папка для сохранения", "Kayıt için klasör seçildi")
+            Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val logExportLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) {
+            thread {
+                try {
+                    val process = Runtime.getRuntime().exec("logcat -d -t 1000")
+                    val reader = BufferedReader(InputStreamReader(process.inputStream))
+                    val logText = StringBuilder()
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) { logText.append(line).append("\n") }
+                    
+                    contentResolver.openOutputStream(uri)?.use { it.write(logText.toString().toByteArray()) }
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен!", "Günlük kaydedildi!"), Toast.LENGTH_LONG).show() }
+                } catch (e: Exception) {
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка сохранения лога", "Hata"), Toast.LENGTH_SHORT).show() }
+                }
+            }
         }
     }
 
@@ -105,19 +128,20 @@ class MainActivity : AppCompatActivity() {
                         val arr = JSONArray(fileText)
                         for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
                     } catch (e: Exception) {
-                        var cleanText = fileText.replace("ФМ", " ").replace("ФN", " ").replace("Фh", " ").replace("Фj", " ").replace("Ф", " ")
-                        val parts = cleanText.split("name")
-                        for (part in parts) {
-                            val urlIdx = part.indexOf("url")
-                            if (urlIdx != -1) {
-                                val nameRaw = part.substring(0, urlIdx).replace(Regex("[^\\p{L}\\p{N}\\s\\-.]"), "").trim()
-                                val urlMatch = Regex("(https?://[a-zA-Z0-9./_\\-?=&:%]+)").find(part.substring(urlIdx))
-                                if (nameRaw.isNotEmpty() && urlMatch != null) {
-                                    val urlStr = urlMatch.groupValues[1]
-                                    if (newFavs.none { it.url == urlStr }) {
-                                        newFavs.add(Station(nameRaw, urlStr, "Imported"))
-                                    }
-                                }
+                        // Мощный парсер для файла PKL
+                        val urlRegex = Regex("(https?://[\\w./_\\-?=&:%]+)")
+                        val matches = urlRegex.findAll(fileText)
+                        for (match in matches) {
+                            val url = match.value
+                            val idx = match.range.first
+                            val start = maxOf(0, idx - 150)
+                            val snippet = fileText.substring(start, idx)
+                            
+                            val nameMatch = Regex("name[^\\p{L}\\p{N}]+([\\p{L}\\p{N}\\s\\-._]+)").find(snippet)
+                            val name = nameMatch?.groupValues?.get(1)?.trim()?.replace(Regex("[^\\p{L}\\p{N}\\s\\-.]"), "") ?: "Unknown Station"
+                            
+                            if (name.length > 1 && newFavs.none { it.url == url }) {
+                                newFavs.add(Station(name, url, "Imported"))
                             }
                         }
                     }
@@ -128,15 +152,17 @@ class MainActivity : AppCompatActivity() {
                             favorites.addAll(newFavs)
                             settings.saveFavorites(favorites)
                             if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
-                            Toast.makeText(this@MainActivity, getStr("Избранное восстановлено (${newFavs.size} станций)", "Favoriler geri yüklendi (${newFavs.size})"), Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, getStr("Восстановлено ${newFavs.size} станций!", "${newFavs.size} istasyon geri yüklendi!"), Toast.LENGTH_LONG).show()
                         }
                     } else {
-                        runOnUiThread { Toast.makeText(this@MainActivity, getStr("Не удалось распознать станции", "İstasyonlar bulunamadı"), Toast.LENGTH_SHORT).show() }
+                        runOnUiThread { Toast.makeText(this@MainActivity, getStr("Станции не найдены", "İstasyonlar bulunamadı"), Toast.LENGTH_SHORT).show() }
                     }
                 } catch (e: Exception) { runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка файла", "Dosya hatası"), Toast.LENGTH_SHORT).show() } }
             }
         }
     }
+
+    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -146,7 +172,6 @@ class MainActivity : AppCompatActivity() {
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
         
-        // Запрос разрешений при первом старте (без лишних папок)
         val permissionsToRequest = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -154,11 +179,17 @@ class MainActivity : AppCompatActivity() {
         } else {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
-        if (permissionsToRequest.isNotEmpty()) {
-            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
-        }
+        if (permissionsToRequest.isNotEmpty()) requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        // Добавляем встроенный Toolbar, чтобы меню всегда отображалось
+        myToolbar = Toolbar(this).apply {
+            setBackgroundColor(Color.parseColor("#1f1f1f"))
+            setTitleTextColor(Color.WHITE)
+        }
+        mainLayout.addView(myToolbar)
+        setSupportActionBar(myToolbar)
 
         navLayout = LinearLayout(this).apply { 
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(48, 48, 48, 48)
@@ -365,6 +396,12 @@ class MainActivity : AppCompatActivity() {
         addSettingItem(layout, getStr("Формат записи", "Kayıt Formatı"), arrayOf("MP3", "AAC"), arrayOf(".mp3", ".aac"), { settings.recFormat }) { newFmt ->
             settings.recFormat = newFmt
         }
+
+        addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
+        val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("По умолчанию: Music / radio_player_recordings", "Varsayılan: Music / radio_player_recordings")
+        folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 12f; setPadding(0,0,0,16) }
+        layout.addView(folderDisplay)
+        layout.addView(Button(this).apply { text = getStr("Выбрать папку вручную", "Klasörü Manuel Seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
         
         addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
         val backupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -373,28 +410,9 @@ class MainActivity : AppCompatActivity() {
         layout.addView(backupLayout)
         
         addHeader(getStr("Отладка", "Hata Ayıklama"))
-        layout.addView(Button(this).apply { text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet"); setOnClickListener { saveLogToFile() } })
+        layout.addView(Button(this).apply { text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet"); setOnClickListener { logExportLauncher.launch("RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt") } })
         
         return layout
-    }
-
-    private fun saveLogToFile() {
-        Toast.makeText(this, getStr("Сохраняю лог...", "Günlük kaydediliyor..."), Toast.LENGTH_SHORT).show()
-        thread {
-            try {
-                val process = Runtime.getRuntime().exec("logcat -d -t 1000")
-                val reader = BufferedReader(InputStreamReader(process.inputStream))
-                val log = java.lang.StringBuilder()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) { log.append(line).append("\n") }
-                
-                val fileName = "RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt"
-                val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
-                if (!rootDir.exists()) rootDir.mkdirs()
-                File(rootDir, fileName).writeText(log.toString())
-                runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен: $fileName", "Günlük kaydedildi"), Toast.LENGTH_LONG).show() }
-            } catch (e: Exception) {}
-        }
     }
 
     private fun showMiniPlayerMenu() {
@@ -483,13 +501,20 @@ class MainActivity : AppCompatActivity() {
                 val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 val fileName = "Record_${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}_$timestamp${settings.recFormat}"
                 
-                val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
-                if (!rootDir.exists()) rootDir.mkdirs()
-                out = FileOutputStream(File(rootDir, fileName))
+                if (settings.recFolderUri.isNotEmpty()) {
+                    val treeUri = Uri.parse(settings.recFolderUri)
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+                    val newFileUri = DocumentsContract.createDocument(contentResolver, docUri, "audio/*", fileName)
+                    out = newFileUri?.let { contentResolver.openOutputStream(it) }
+                } else {
+                    val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
+                    if (!rootDir.exists()) rootDir.mkdirs()
+                    out = FileOutputStream(File(rootDir, fileName))
+                }
                 
                 val buffer = ByteArray(8192); var bytesRead = 0
                 while (isRecording && input?.read(buffer).also { bytesRead = it ?: -1 } != -1) { out?.write(buffer, 0, bytesRead) }
-            } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи.", "Kayıt hatası."), Toast.LENGTH_LONG).show() } }
+            } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи. Проверьте путь.", "Kayıt hatası. Klasörü kontrol edin."), Toast.LENGTH_LONG).show() } }
             finally { try { out?.close() } catch (e: Exception) {}; try { input?.close() } catch (e: Exception) {}; isRecording = false }
         }
     }
