@@ -1,7 +1,9 @@
 package com.neyman.radio_player
 
+import android.content.Context
 import android.os.Bundle
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
@@ -18,9 +20,23 @@ class PlaybackService : MediaSessionService() {
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
-        player = ExoPlayer.Builder(this).build()
         
-        // Создаем кнопку "Закрыть" для шторки уведомлений
+        // Считываем настройки буфера
+        val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+        val bufferSec = sp.getInt("buffer_seconds", 5)
+        
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                bufferSec * 1000, 
+                bufferSec * 1000 * 2, 
+                bufferSec * 1000, 
+                bufferSec * 1000
+            ).build()
+
+        player = ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
+            .build()
+        
         val stopCommand = SessionCommand("ACTION_STOP_APP", Bundle.EMPTY)
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
@@ -28,7 +44,6 @@ class PlaybackService : MediaSessionService() {
             .setSessionCommand(stopCommand)
             .build()
 
-        // Обрабатываем нажатие этой кнопки
         val callback = object : MediaSession.Callback {
             override fun onCustomCommand(
                 session: MediaSession,
@@ -39,7 +54,7 @@ class PlaybackService : MediaSessionService() {
                 if (customCommand.customAction == "ACTION_STOP_APP") {
                     player.stop()
                     player.clearMediaItems()
-                    stopSelf() // Полностью убиваем сервис
+                    stopSelf()
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 return super.onCustomCommand(session, controller, customCommand, args)
@@ -48,7 +63,7 @@ class PlaybackService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, player)
             .setCallback(callback)
-            .setCustomLayout(listOf(stopButton)) // Добавляем нашу кнопку
+            .setCustomLayout(listOf(stopButton))
             .build()
     }
 

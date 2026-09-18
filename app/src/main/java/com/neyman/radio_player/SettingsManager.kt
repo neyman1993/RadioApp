@@ -24,6 +24,11 @@ class SettingsManager(context: Context) {
         get() = sp.getInt("min_bitrate", 0)
         set(value) = sp.edit().putInt("min_bitrate", value).apply()
 
+    // НОВОЕ: Настройка буферизации
+    var bufferSeconds: Int
+        get() = sp.getInt("buffer_seconds", 5)
+        set(value) = sp.edit().putInt("buffer_seconds", value).apply()
+
     fun applySettings() {
         val lang = sp.getString("app_lang", "system")
         if (lang != "system") {

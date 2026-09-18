@@ -1,7 +1,9 @@
 package com.neyman.radio_player
 
+import android.Manifest
 import android.app.AlertDialog
 import android.content.*
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -70,8 +72,13 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             settings.recFolderUri = uri.toString()
-            Toast.makeText(this, getStr("Папка успешно выбрана", "Klasör başarıyla seçildi"), Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (isGranted) { startRecordingLogic() } 
+        else { Toast.makeText(this, getStr("Нет прав на сохранение", "Kayıt izni verilmedi"), Toast.LENGTH_LONG).show() }
     }
 
     private val exportFavoritesLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -108,6 +115,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d(TAG, "onCreate: Приложение запущено")
         
         settings = SettingsManager(this)
         settings.applySettings()
@@ -139,7 +147,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#333333"))
         }
 
-        // ОБЪЕДИНЕННЫЙ ТЕКСТ: Только один TextView для плеера
         stationNameText = TextView(this).apply {
             text = getStr("Радио не выбрано", "Radyo seçilmedi")
             textSize = 16f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
@@ -284,6 +291,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         layout.addView(bitrateSpinner)
+        
+        addHeader(getStr("Буферизация (Защита от заиканий)", "Önbelleğe Alma (Saniye)"))
+        val bufferSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf("3 " + getStr("сек", "sn"), "5 " + getStr("сек", "sn") + getStr(" (По умолчанию)", " (Varsayılan)"), "10 " + getStr("сек", "sn"), "20 " + getStr("сек", "sn")))
+            setSelection(when(settings.bufferSeconds) { 3 -> 0; 5 -> 1; 10 -> 2; 20 -> 3; else -> 1 })
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) { settings.bufferSeconds = arrayOf(3, 5, 10, 20)[pos] }
+                override fun onNothingSelected(p0: AdapterView<*>?) {}
+            }
+        }
+        layout.addView(bufferSpinner)
+        layout.addView(TextView(this).apply { text = getStr("Применится при следующем запуске радио", "Oynatıcı yeniden başlatıldığında uygulanacak"); textSize = 12f; setPadding(0,0,0,16) })
 
         addHeader(getStr("Формат записи", "Kayıt Formatı"))
         val formatSpinner = Spinner(this).apply {
@@ -395,7 +414,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // ЗАПРОС ПАПКИ, ЕСЛИ НЕ ВЫБРАНА
         if (settings.recFolderUri.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle(getStr("Выбор папки", "Klasör Seçimi"))
@@ -459,27 +477,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = player?.currentMediaItemIndex ?: -1
-                if (idx != -1 && currentPlaylist.isNotEmpty() && idx < currentPlaylist.size) {
-                    if (currentStationIndex != idx) {
-                        if (isRecording) {
-                            isRecording = false
-                            Toast.makeText(this@MainActivity, getStr("Запись остановлена (смена станции)", "Kayıt durduruldu (istasyon değişti)"), Toast.LENGTH_SHORT).show()
-                        }
-                        currentStationIndex = idx
-                        val st = currentPlaylist[idx]
-                        stationNameText.text = st.name
-                        currentSongMetadata = ""
-                        stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + st.name)
-                    }
-                }
-                
-                if (player?.playbackState == Player.STATE_IDLE || player?.playerError != null) {
-                    player?.prepare(); player?.play()
-                }
-            }
-            
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
@@ -491,26 +488,20 @@ class MainActivity : AppCompatActivity() {
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
-        val isSamePlaylist = (currentPlaylist.size == playlist.size && currentPlaylist.isNotEmpty() && currentPlaylist[0].url == playlist[0].url)
+        player?.stop() // ЖЕСТКАЯ ОСТАНОВКА СТАРОЙ СТАНЦИИ
+        
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
         
         val station = currentPlaylist[index]
         currentSongMetadata = ""
-        stationNameText.text = station.name
+        stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
-        // Загружаем весь список для работы кнопок в шторке
-        if (!isSamePlaylist || player?.mediaItemCount != playlist.size) {
-            val mediaItems = playlist.map { st ->
-                val meta = MediaMetadata.Builder().setTitle(st.name).build()
-                MediaItem.Builder().setMediaId(st.url).setUri(st.url).setMediaMetadata(meta).build()
-            }
-            player?.setMediaItems(mediaItems, index, androidx.media3.common.C.TIME_UNSET)
-        } else {
-            player?.seekToDefaultPosition(index)
-        }
+        val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
+        val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
         
+        player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
     }
