@@ -2,6 +2,7 @@ package com.neyman.radio_player
 
 import android.content.Context
 import android.os.Bundle
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -21,7 +22,6 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         
-        // Считываем настройки буфера
         val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
         val bufferSec = sp.getInt("buffer_seconds", 5)
         
@@ -37,6 +37,19 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
         
+        // Создаем кнопки для шторки
+        val prevButton = CommandButton.Builder()
+            .setDisplayName("Предыдущий")
+            .setIconResId(android.R.drawable.ic_media_previous)
+            .setSessionCommand(SessionCommand(SessionCommand.COMMAND_CODE_PLAYER_SEEK_TO_PREVIOUS))
+            .build()
+            
+        val nextButton = CommandButton.Builder()
+            .setDisplayName("Следующий")
+            .setIconResId(android.R.drawable.ic_media_next)
+            .setSessionCommand(SessionCommand(SessionCommand.COMMAND_CODE_PLAYER_SEEK_TO_NEXT))
+            .build()
+            
         val stopCommand = SessionCommand("ACTION_STOP_APP", Bundle.EMPTY)
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
@@ -63,7 +76,7 @@ class PlaybackService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, player)
             .setCallback(callback)
-            .setCustomLayout(listOf(stopButton))
+            .setCustomLayout(listOf(prevButton, nextButton, stopButton))
             .build()
     }
 

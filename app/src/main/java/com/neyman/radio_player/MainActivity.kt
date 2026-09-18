@@ -36,6 +36,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.regex.Pattern
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var listAdapter: ArrayAdapter<String>
     private lateinit var stationNameText: TextView
     private lateinit var btnPlayPause: Button
+    private lateinit var miniPlayerLayout: LinearLayout
 
     private var currentMode = "MAIN_MENU"
     private var currentCountryName = ""
@@ -67,6 +69,9 @@ class MainActivity : AppCompatActivity() {
     private var sleepRunnable: Runnable? = null
     private var isRecording = false
     private var recordThread: Thread? = null
+    
+    private var metadataTimer: Timer? = null
+    private var currentStreamUrlForMetadata = ""
 
     private val folderPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -74,11 +79,6 @@ class MainActivity : AppCompatActivity() {
             settings.recFolderUri = uri.toString()
             Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) { startRecordingLogic() } 
-        else { Toast.makeText(this, getStr("Нет прав на сохранение", "Kayıt izni verilmedi"), Toast.LENGTH_LONG).show() }
     }
 
     private val exportFavoritesLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
@@ -104,20 +104,17 @@ class MainActivity : AppCompatActivity() {
                         val arr = JSONArray(fileText)
                         for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
                     } catch (e: Exception) {
-                        val cleanText = fileText.replace(Regex("[^a-zA-Z0-9 :./_\\-А-Яа-яЁё]"), " ")
-                        val parts = cleanText.split("name ")
+                        var cleanText = fileText.replace("ФМ", " ").replace("ФN", " ").replace("Фh", " ").replace("Фj", " ").replace("Ф", " ")
+                        val parts = cleanText.split("name")
                         for (part in parts) {
-                            val urlIdx = part.indexOf(" url ")
-                            val urlResIdx = part.indexOf(" url resolved ")
-                            val targetIdx = if (urlIdx != -1) urlIdx else if (urlResIdx != -1) urlResIdx else -1
-                            
-                            if (targetIdx != -1) {
-                                val name = part.substring(0, targetIdx).trim()
-                                val urlMatch = Regex("(https?://\\S+)").find(part)
-                                if (name.isNotEmpty() && urlMatch != null) {
+                            val urlIdx = part.indexOf("url")
+                            if (urlIdx != -1) {
+                                val nameRaw = part.substring(0, urlIdx).replace(Regex("[^\\p{L}\\p{N}\\s\\-.]"), "").trim()
+                                val urlMatch = Regex("(https?://[a-zA-Z0-9./_\\-?=&:%]+)").find(part.substring(urlIdx))
+                                if (nameRaw.isNotEmpty() && urlMatch != null) {
                                     val urlStr = urlMatch.groupValues[1]
                                     if (newFavs.none { it.url == urlStr }) {
-                                        newFavs.add(Station(name, urlStr, "Imported"))
+                                        newFavs.add(Station(nameRaw, urlStr, "Imported"))
                                     }
                                 }
                             }
@@ -140,6 +137,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // НОВОЕ: Обработчик запроса разрешений
+    private val requestMultiplePermissionsLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        var allGranted = true
+        permissions.entries.forEach { if (!it.value) allGranted = false }
+        if (!allGranted) {
+            Toast.makeText(this, getStr("Некоторые разрешения не предоставлены. Функции могут быть ограничены.", "Bazı izinler verilmedi. İşlevler sınırlı olabilir."), Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "onCreate: Приложение запущено")
@@ -148,6 +154,9 @@ class MainActivity : AppCompatActivity() {
         settings.applySettings()
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
+        
+        // НОВОЕ: Запрашиваем разрешения при старте
+        checkAndRequestPermissions()
         
         val mainLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
@@ -169,7 +178,7 @@ class MainActivity : AppCompatActivity() {
         settingsScroll = ScrollView(this).apply { visibility = View.GONE }
         settingsScroll.addView(createSettingsLayout())
 
-        val miniPlayerLayout = LinearLayout(this).apply {
+        miniPlayerLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24)
             setBackgroundColor(Color.parseColor("#333333"))
         }
@@ -222,20 +231,72 @@ class MainActivity : AppCompatActivity() {
         controllerFuture.addListener({ player = controllerFuture.get(); setupPlayerListener() }, ContextCompat.getMainExecutor(this))
     }
 
+    // НОВОЕ: Функция для проверки и запроса всех необходимых разрешений
+    private fun checkAndRequestPermissions() {
+        val permissionsToRequest = mutableListOf<String>()
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.READ_MEDIA_AUDIO)
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+        
+        if (permissionsToRequest.isNotEmpty()) {
+            requestMultiplePermissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        }
+    }
+
     private fun updateUIForMode() {
         when (currentMode) {
-            "MAIN_MENU" -> { navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(false); supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar") }
-            "SEARCH_RESULTS" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları") }
-            "COUNTRIES" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Страны", "Ülkeler") }
-            "STATIONS_OF_COUNTRY" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = currentCountryName }
-            "FAVORITES" -> { navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Избранное", "Favoriler") }
-            "SETTINGS" -> { navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE; supportActionBar?.setDisplayHomeAsUpEnabled(true); supportActionBar?.title = getStr("Настройки", "Ayarlar") }
+            "MAIN_MENU" -> { 
+                navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(false)
+                supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar") 
+            }
+            "SEARCH_RESULTS" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları") 
+            }
+            "COUNTRIES" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Страны", "Ülkeler") 
+            }
+            "STATIONS_OF_COUNTRY" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = currentCountryName 
+            }
+            "FAVORITES" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Избранное", "Favoriler") 
+            }
+            "SETTINGS" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
+                miniPlayerLayout.visibility = View.GONE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Настройки", "Ayarlar") 
+            }
         }
         invalidateOptionsMenu()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
+        menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
         return super.onCreateOptionsMenu(menu)
     }
 
@@ -248,7 +309,7 @@ class MainActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
             android.R.id.home -> onBackPressed()
-            1 -> { currentMode = "SETTINGS"; updateUIForMode() }
+            2 -> attemptExit()
         }
         return super.onOptionsItemSelected(item)
     }
@@ -272,79 +333,62 @@ class MainActivity : AppCompatActivity() {
 
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
+    private fun addSettingItem(layout: LinearLayout, title: String, displayNames: Array<String>, values: Array<String>, currentValue: () -> String, onSelected: (String) -> Unit) {
+        layout.addView(TextView(this).apply { text = title; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, 24, 0, 8) })
+        val btn = Button(this).apply {
+            val current = currentValue()
+            val idx = values.indexOf(current).takeIf { it >= 0 } ?: 0
+            text = displayNames[idx]
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(40, 32, 40, 32)
+            setOnClickListener {
+                val currentDialogIdx = values.indexOf(currentValue()).takeIf { it >= 0 } ?: 0
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(title)
+                    .setSingleChoiceItems(displayNames, currentDialogIdx) { dialog, which ->
+                        text = displayNames[which]
+                        onSelected(values[which])
+                        dialog.dismiss()
+                    }
+                    .setNegativeButton(getStr("Отмена", "İptal"), null)
+                    .show()
+            }
+        }
+        layout.addView(btn)
+    }
+
     private fun createSettingsLayout(): LinearLayout {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 32, 32, 32) }
         fun addHeader(text: String) { layout.addView(TextView(this).apply { this.text = text; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, 24, 0, 8) }) }
 
-        addHeader(getStr("Тема оформления", "Tema"))
-        val themeSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Системная", "Sistem"), getStr("Светлая", "Açık"), getStr("Темная", "Koyu")))
-            setSelection(when (settings.getTheme()) { "light" -> 1; "dark" -> 2; else -> 0 })
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
-                    val newTheme = arrayOf("system", "light", "dark")[pos]
-                    if (newTheme != settings.getTheme()) { settings.saveTheme(newTheme); settings.applySettings() }
-                }
-                override fun onNothingSelected(p0: AdapterView<*>?) {}
-            }
+        addSettingItem(layout, getStr("Тема оформления", "Tema"), arrayOf(getStr("Системная", "Sistem"), getStr("Светлая", "Açık"), getStr("Темная", "Koyu")), arrayOf("system", "light", "dark"), { settings.getTheme() }) { newTheme ->
+            settings.saveTheme(newTheme); settings.applySettings()
         }
-        layout.addView(themeSpinner)
 
-        addHeader(getStr("Язык приложения", "Uygulama Dili"))
-        val langSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("Системный", "Sistem"), "Русский", "Türkçe"))
-            setSelection(when (settings.getLanguage()) { "ru" -> 1; "tr" -> 2; else -> 0 })
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) {
-                    val newLang = arrayOf("system", "ru", "tr")[pos]
-                    if (newLang != settings.getLanguage()) { settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang)) }
-                }
-                override fun onNothingSelected(p0: AdapterView<*>?) {}
-            }
+        addSettingItem(layout, getStr("Язык приложения", "Uygulama Dili"), arrayOf(getStr("Системный", "Sistem"), "Русский", "Türkçe"), arrayOf("system", "ru", "tr"), { settings.getLanguage() }) { newLang ->
+            settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang))
         }
-        layout.addView(langSpinner)
 
         addHeader(getStr("Скрывать дубликаты", "Kopyaları Gizle"))
         val dupSwitch = Switch(this).apply { isChecked = settings.hideDuplicates; setOnCheckedChangeListener { _, isCheckedVal -> settings.hideDuplicates = isCheckedVal } }
         layout.addView(dupSwitch)
 
-        addHeader(getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"))
-        val bitrateSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf(getStr("По умолчанию (то что дает сервер)", "Varsayılan (sunucunun sağladığı)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"))
-            setSelection(when(settings.minBitrate) { 64 -> 1; 128 -> 2; 192 -> 3; 320 -> 4; else -> 0 })
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) { settings.minBitrate = arrayOf(0, 64, 128, 192, 320)[pos] }
-                override fun onNothingSelected(p0: AdapterView<*>?) {}
-            }
+        addSettingItem(layout, getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"), arrayOf(getStr("По умолчанию (то что дает сервер)", "Varsayılan (sunucunun sağladığı)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"), arrayOf("0", "64", "128", "192", "320"), { settings.minBitrate.toString() }) { newBit ->
+            settings.minBitrate = newBit.toInt()
         }
-        layout.addView(bitrateSpinner)
-        
-        addHeader(getStr("Буферизация (Защита от заиканий)", "Önbelleğe Alma (Saniye)"))
-        val bufferSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf("3 " + getStr("сек", "sn"), "5 " + getStr("сек", "sn") + getStr(" (По умолчанию)", " (Varsayılan)"), "10 " + getStr("сек", "sn"), "20 " + getStr("сек", "sn")))
-            setSelection(when(settings.bufferSeconds) { 3 -> 0; 5 -> 1; 10 -> 2; 20 -> 3; else -> 1 })
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) { settings.bufferSeconds = arrayOf(3, 5, 10, 20)[pos] }
-                override fun onNothingSelected(p0: AdapterView<*>?) {}
-            }
+
+        addSettingItem(layout, getStr("Буферизация (Защита от заиканий)", "Önbelleğe Alma (Saniye)"), arrayOf("3 " + getStr("сек", "sn"), "5 " + getStr("сек", "sn") + getStr(" (По умолчанию)", " (Varsayılan)"), "10 " + getStr("сек", "sn"), "20 " + getStr("сек", "sn")), arrayOf("3", "5", "10", "20"), { settings.bufferSeconds.toString() }) { newBuf ->
+            settings.bufferSeconds = newBuf.toInt()
         }
-        layout.addView(bufferSpinner)
         layout.addView(TextView(this).apply { text = getStr("Применится при следующем запуске радио", "Oynatıcı yeniden başlatıldığında uygulanacak"); textSize = 12f; setPadding(0,0,0,16) })
 
-        addHeader(getStr("Формат записи", "Kayıt Formatı"))
-        val formatSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, arrayOf("MP3", "AAC"))
-            setSelection(if (settings.recFormat == ".aac") 1 else 0)
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p0: AdapterView<*>?, p1: View?, pos: Int, p3: Long) { settings.recFormat = if (pos == 1) ".aac" else ".mp3" }
-                override fun onNothingSelected(p0: AdapterView<*>?) {}
-            }
+        addSettingItem(layout, getStr("Формат записи", "Kayıt Formatı"), arrayOf("MP3", "AAC"), arrayOf(".mp3", ".aac"), { settings.recFormat }) { newFmt ->
+            settings.recFormat = newFmt
         }
-        layout.addView(formatSpinner)
 
         addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
-        layout.addView(TextView(this).apply { text = getStr("Если не выбрана, система запросит доступ при первой записи.", "Seçilmezse, sistem ilk kayıtta erişim ister."); textSize = 12f; setPadding(0,0,0,16) })
-        layout.addView(Button(this).apply { text = getStr("Выбрать папку вручную", "Klasörü Manuel Seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
+        layout.addView(TextView(this).apply { text = getStr("Все записи автоматически сохраняются в папку Music на вашем телефоне.", "Tüm kayıtlar telefonunuzdaki Music klasörüne otomatik olarak kaydedilir."); textSize = 12f; setPadding(0,0,0,16) })
+        layout.addView(Button(this).apply { text = getStr("Выбрать другую папку вручную", "Başka bir klasörü manuel seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
         
         addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
         val backupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -383,13 +427,20 @@ class MainActivity : AppCompatActivity() {
         val isFav = favorites.any { it.url == station.url }
         
         val options = arrayOf(
+            getStr("Настройки", "Ayarlar"),
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
             if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet"),
             if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")
         )
         AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, w ->
-            when (w) { 0 -> copySongMetadata(station); 1 -> toggleFavorite(station); 2 -> toggleRecording(); 3 -> if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() }
+            when (w) { 
+                0 -> { preSettingsMode = currentMode; currentMode = "SETTINGS"; updateUIForMode() }
+                1 -> copySongMetadata(station)
+                2 -> toggleFavorite(station)
+                3 -> toggleRecording()
+                4 -> if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
+            }
         }.show()
     }
 
@@ -440,17 +491,8 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, getStr("Запись остановлена", "Kayıt durduruldu"), Toast.LENGTH_SHORT).show()
             return
         }
-
-        if (settings.recFolderUri.isEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle(getStr("Выбор папки", "Klasör Seçimi"))
-                .setMessage(getStr("Пожалуйста, выберите папку на телефоне, куда будут сохраняться записанные треки.", "Lütfen kaydedilen parçaların kaydedileceği klasörü seçin."))
-                .setPositiveButton("OK") { _, _ -> folderPickerLauncher.launch(null) }
-                .setNegativeButton(getStr("Отмена", "İptal"), null)
-                .show()
-            return
-        }
         
+        // НОВОЕ: Мы больше не показываем окно выбора, а сразу пишем в Music.
         startRecordingLogic()
     }
 
@@ -472,7 +514,12 @@ class MainActivity : AppCompatActivity() {
                     val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
                     val newFileUri = DocumentsContract.createDocument(contentResolver, docUri, "audio/*", fileName)
                     out = newFileUri?.let { contentResolver.openOutputStream(it) }
-                } 
+                } else {
+                    val rootDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "radio_player_recordings")
+                    if (!rootDir.exists()) rootDir.mkdirs()
+                    out = FileOutputStream(File(rootDir, fileName))
+                }
+                
                 val buffer = ByteArray(8192); var bytesRead = 0
                 while (isRecording && input?.read(buffer).also { bytesRead = it ?: -1 } != -1) { out?.write(buffer, 0, bytesRead) }
             } catch (e: Exception) { runOnUiThread { isRecording = false; Toast.makeText(this@MainActivity, getStr("Ошибка записи. Проверьте путь.", "Kayıt hatası. Klasörü kontrol edin."), Toast.LENGTH_LONG).show() } }
@@ -485,6 +532,61 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(getStr("Поиск", "Arama")).setView(input)
             .setPositiveButton(getStr("Найти", "Bul")) { _, _ -> val q = input.text.toString().trim(); if (q.isNotEmpty()) { currentMode = "SEARCH_RESULTS"; updateUIForMode(); fetchStations("byname/" + URLEncoder.encode(q, "UTF-8")) } }
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
+    }
+
+    private fun startMetadataFetcher(urlStr: String, stationName: String) {
+        metadataTimer?.cancel()
+        currentStreamUrlForMetadata = urlStr
+        
+        metadataTimer = Timer()
+        metadataTimer?.schedule(object : TimerTask() {
+            override fun run() {
+                try {
+                    val url = URL(urlStr)
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.setRequestProperty("Icy-MetaData", "1")
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                    conn.connectTimeout = 5000
+                    conn.readTimeout = 5000
+                    
+                    val metaintStr = conn.getHeaderField("icy-metaint")
+                    if (metaintStr != null) {
+                        val metaint = metaintStr.toInt()
+                        val inputStream = conn.inputStream
+                        
+                        var bytesRead = 0
+                        while (bytesRead < metaint) {
+                            val skipped = inputStream.skip((metaint - bytesRead).toLong())
+                            if (skipped <= 0) break
+                            bytesRead += skipped.toInt()
+                        }
+                        
+                        val metaLengthByte = inputStream.read()
+                        if (metaLengthByte > 0) {
+                            val metaLength = metaLengthByte * 16
+                            val metaBuffer = ByteArray(metaLength)
+                            inputStream.read(metaBuffer, 0, metaLength)
+                            val metaString = String(metaBuffer, Charsets.UTF_8)
+                            
+                            val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(metaString)
+                            if (matcher.find()) {
+                                val title = matcher.group(1)?.trim() ?: ""
+                                if (title.isNotEmpty() && title != currentSongMetadata && title.lowercase() != stationName.lowercase()) {
+                                    currentSongMetadata = title
+                                    runOnUiThread {
+                                        stationNameText.text = "$stationName\n$title"
+                                        val mediaMeta = MediaMetadata.Builder().setTitle(title).setArtist(stationName).build()
+                                        val mediaItem = MediaItem.Builder().setMediaId(urlStr).setUri(urlStr).setMediaMetadata(mediaMeta).build()
+                                        player?.setMediaItem(mediaItem)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    conn.disconnect()
+                } catch (e: Exception) {}
+            }
+        }, 3000, 15000)
     }
 
     private fun setupPlayerListener() {
@@ -516,12 +618,13 @@ class MainActivity : AppCompatActivity() {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
         player?.stop() 
+        metadataTimer?.cancel()
+        currentSongMetadata = ""
         
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
         
         val station = currentPlaylist[index]
-        currentSongMetadata = ""
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
@@ -531,6 +634,8 @@ class MainActivity : AppCompatActivity() {
         player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
+        
+        startMetadataFetcher(station.url, station.name)
     }
 
     private fun togglePlayPause() {
@@ -623,7 +728,17 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
+    private fun attemptExit() {
+        if (isRecording) {
+            AlertDialog.Builder(this).setTitle(getStr("Внимание", "Uyarı"))
+                .setMessage(getStr("Идет запись радио. Остановить и выйти?", "Radyo kaydı devam ediyor. Durdurup çıkılsın mı?"))
+                .setPositiveButton(getStr("Выйти", "Çıkış")) { _, _ -> isRecording = false; player?.stop(); finishAffinity() }
+                .setNegativeButton(getStr("Отмена", "İptal"), null).show()
+        } else { player?.stop(); finishAffinity() }
+    }
+
     override fun onDestroy() {
+        metadataTimer?.cancel()
         isRecording = false; cancelSleepTimer(); MediaController.releaseFuture(controllerFuture); super.onDestroy()
     }
 }
