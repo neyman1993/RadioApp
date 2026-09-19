@@ -22,6 +22,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.core.os.LocaleListCompat
+import androidx.core.view.AccessibilityDelegateCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -36,7 +39,6 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.regex.Pattern
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -71,8 +73,10 @@ class MainActivity : AppCompatActivity() {
     private var sleepRunnable: Runnable? = null
     private var isRecording = false
     private var recordThread: Thread? = null
+    
+    private var metadataTimer: Timer? = null
 
-    // НОВОЕ: Слушатель для кнопок гарнитуры и шторки уведомлений
+    // Обработчик кнопок гарнитуры и шторки
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -103,9 +107,7 @@ class MainActivity : AppCompatActivity() {
                     while (reader.readLine().also { line = it } != null) { logText.append(line).append("\n") }
                     contentResolver.openOutputStream(uri)?.use { it.write(logText.toString().toByteArray()) }
                     runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен!", "Günlük kaydedildi!"), Toast.LENGTH_LONG).show() }
-                } catch (e: Exception) {
-                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка сохранения лога", "Hata"), Toast.LENGTH_SHORT).show() }
-                }
+                } catch (e: Exception) {}
             }
         }
     }
@@ -117,12 +119,11 @@ class MainActivity : AppCompatActivity() {
                     val json = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE).getString("favorites_json", "[]") ?: "[]"
                     contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
                     runOnUiThread { Toast.makeText(this@MainActivity, getStr("Избранное успешно сохранено", "Favoriler başarıyla dışa aktarıldı"), Toast.LENGTH_LONG).show() }
-                } catch (e: Exception) { runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка", "Hata"), Toast.LENGTH_SHORT).show() } }
+                } catch (e: Exception) {}
             }
         }
     }
 
-    // НОВОЕ: Настоящий парсер Python файлов Pickle!
     private val importFavoritesLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             thread {
@@ -131,12 +132,10 @@ class MainActivity : AppCompatActivity() {
                     val newFavs = ArrayList<Station>()
 
                     try {
-                        // 1. Попытка прочитать как обычный JSON
                         val fileText = String(bytes, Charsets.UTF_8)
                         val arr = JSONArray(fileText)
                         for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
                     } catch (e: Exception) {
-                        // 2. Использование нативной библиотеки Pickle для Python формата
                         val unpickler = net.razorvine.pickle.Unpickler()
                         val data = unpickler.loads(bytes)
                         if (data is ArrayList<*>) {
@@ -178,7 +177,6 @@ class MainActivity : AppCompatActivity() {
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
         
-        // Регистрация ресивера для кнопок гарнитуры
         val filter = IntentFilter().apply {
             addAction("com.neyman.radio.NEXT")
             addAction("com.neyman.radio.PREV")
@@ -213,7 +211,41 @@ class MainActivity : AppCompatActivity() {
         navLayout.addView(btnSearchTab); navLayout.addView(btnCountriesTab); navLayout.addView(btnFavTab)
 
         listView = ListView(this)
-        listAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
+        
+        // TALKBACK: Интеграция контекстного меню с жестами (свайп вниз/вверх)
+        listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent)
+                ViewCompat.setAccessibilityDelegate(view, object : AccessibilityDelegateCompat() {
+                    override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
+                        super.onInitializeAccessibilityNodeInfo(host, info)
+                        val list = if (currentMode == "FAVORITES") favorites else stations
+                        if (position >= list.size) return
+                        val station = list[position]
+                        val isFav = favorites.any { it.url == station.url }
+                        
+                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(101, if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle")))
+                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(102, getStr("Скопировать название песни", "Şarkı adını kopyala")))
+                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(103, getStr("Информация", "Bilgi")))
+                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(104, getStr("Поделиться", "Paylaş")))
+                    }
+
+                    override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                        val list = if (currentMode == "FAVORITES") favorites else stations
+                        if (position >= list.size) return false
+                        val station = list[position]
+                        when (action) {
+                            101 -> { toggleFavorite(station); return true }
+                            102 -> { copySongMetadata(station); return true }
+                            103 -> { showStationInfo(station); return true }
+                            104 -> { shareStation(station); return true }
+                        }
+                        return super.performAccessibilityAction(host, action, args)
+                    }
+                })
+                return view
+            }
+        }
         listView.adapter = listAdapter
 
         settingsScroll = ScrollView(this).apply { visibility = View.GONE }
@@ -260,11 +292,6 @@ class MainActivity : AppCompatActivity() {
         listView.setOnItemClickListener { _, _, position, _ ->
             if (currentMode == "COUNTRIES") { loadStationsByCountry(countries[position].split(" (")[0]) } 
             else { playStation(position, if (currentMode == "FAVORITES") favorites else stations) }
-        }
-        listView.setOnItemLongClickListener { _, _, position, _ ->
-            if (currentMode == "COUNTRIES") return@setOnItemLongClickListener false
-            val list = if (currentMode == "FAVORITES") favorites else stations
-            if (position in list.indices) { showStationListMenu(list[position]); true } else false
         }
 
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
@@ -430,8 +457,8 @@ class MainActivity : AppCompatActivity() {
         val station = currentPlaylist[currentStationIndex]
         val isFav = favorites.any { it.url == station.url }
         
+        // Убрали Настройки из этого меню!
         val options = arrayOf(
-            getStr("Настройки", "Ayarlar"),
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
             if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet"),
@@ -439,69 +466,24 @@ class MainActivity : AppCompatActivity() {
         )
         AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, w ->
             when (w) { 
-                0 -> { preSettingsMode = currentMode; currentMode = "SETTINGS"; updateUIForMode() }
-                1 -> copySongMetadata(station)
-                2 -> toggleFavorite(station)
-                3 -> toggleRecording()
-                4 -> if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
+                0 -> copySongMetadata(station)
+                1 -> toggleFavorite(station)
+                2 -> toggleRecording()
+                3 -> if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
             }
         }.show()
     }
 
-    private fun showStationListMenu(station: Station) {
-        val isFav = favorites.any { it.url == station.url }
-        val options = arrayOf(
-            if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
-            getStr("Поделиться ссылкой", "Bağlantıyı paylaş"), 
-            getStr("Информация о станции", "İstasyon bilgisi"),
-            getStr("Скопировать название песни", "Şarkı adını kopyala")
-        )
-        AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, which ->
-            when (which) { 0 -> toggleFavorite(station); 1 -> shareStation(station); 2 -> showStationInfo(station); 3 -> copySongMetadata(station) }
-        }.show()
+    private fun showStationInfo(station: Station) {
+        val info = getStr("Название: ", "Adı: ") + station.name + "\n" + getStr("Страна: ", "Ülke: ") + station.country + "\nURL: " + station.url
+        AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
-    // НОВОЕ: Ручное копирование метаданных как в скрипте Python (работает всегда)
     private fun copySongMetadata(station: Station) {
-        Toast.makeText(this, getStr("Получение данных...", "Veri alınıyor..."), Toast.LENGTH_SHORT).show()
-        thread {
-            var titleToCopy = currentSongMetadata
-            if (titleToCopy.isEmpty()) {
-                try {
-                    val conn = URL(station.url).openConnection() as HttpURLConnection
-                    conn.setRequestProperty("Icy-MetaData", "1")
-                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                    conn.connectTimeout = 3000
-                    conn.readTimeout = 3000
-                    val metaint = conn.getHeaderField("icy-metaint")?.toIntOrNull()
-                    if (metaint != null) {
-                        val inputStream = conn.inputStream
-                        var bytesRead = 0
-                        while (bytesRead < metaint) {
-                            val skipped = inputStream.skip((metaint - bytesRead).toLong())
-                            if (skipped <= 0L) break
-                            bytesRead += skipped.toInt()
-                        }
-                        val metaLength = inputStream.read() * 16
-                        if (metaLength > 0) {
-                            val metaBuffer = ByteArray(metaLength)
-                            inputStream.read(metaBuffer, 0, metaLength)
-                            val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(String(metaBuffer, Charsets.UTF_8))
-                            if (matcher.find()) titleToCopy = matcher.group(1)?.trim() ?: ""
-                        }
-                    }
-                    conn.disconnect()
-                } catch (e: Exception) {}
-            }
-            
-            if (titleToCopy.isEmpty()) titleToCopy = station.name
-            
-            runOnUiThread {
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", titleToCopy))
-                Toast.makeText(this@MainActivity, getStr("Скопировано: ", "Kopyalandı: ") + titleToCopy, Toast.LENGTH_SHORT).show()
-            }
-        }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val textToCopy = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
+        Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
     }
 
     private fun showTimerDialog() {
@@ -578,14 +560,66 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
+    // НОВОЕ: Безопасный парсер метаданных из API (как в твоем Python скрипте), не трогает аудиопоток!
+    private fun startMetadataFetcher(urlStr: String, stationName: String) {
+        metadataTimer?.cancel()
+        currentStreamUrlForMetadata = urlStr
+        
+        metadataTimer = Timer()
+        metadataTimer?.schedule(object : TimerTask() {
+            override fun run() {
+                try {
+                    val parsedUrl = URL(urlStr)
+                    val host = parsedUrl.host
+                    val port = if (parsedUrl.port == -1) parsedUrl.defaultPort else parsedUrl.port
+                    val protocol = parsedUrl.protocol
+                    
+                    var title = ""
+
+                    try {
+                        val statsUrl = URL("$protocol://$host:$port/stats?json=1")
+                        val conn = statsUrl.openConnection() as HttpURLConnection
+                        conn.connectTimeout = 3000; conn.readTimeout = 3000
+                        val res = conn.inputStream.bufferedReader().readText()
+                        title = JSONObject(res).optString("songtitle", "")
+                    } catch(e: Exception){}
+                    
+                    if (title.isEmpty()) {
+                        try {
+                            val statusUrl = URL("$protocol://$host:$port/status-json.xsl")
+                            val conn = statusUrl.openConnection() as HttpURLConnection
+                            conn.connectTimeout = 3000; conn.readTimeout = 3000
+                            val res = conn.inputStream.bufferedReader().readText()
+                            val icestats = JSONObject(res).optJSONObject("icestats")
+                            val source = icestats?.opt("source")
+                            if (source is JSONArray && source.length() > 0) {
+                                title = source.getJSONObject(0).optString("title", "")
+                            } else if (source is JSONObject) {
+                                title = source.optString("title", "")
+                            }
+                        } catch (e: Exception){}
+                    }
+
+                    if (title.isNotEmpty() && title != currentSongMetadata && title.lowercase() != stationName.lowercase() && title != "Радио" && title != "Radyo") {
+                        currentSongMetadata = title
+                        runOnUiThread {
+                            stationNameText.text = "$stationName\n$title"
+                            stationNameText.announceForAccessibility(title)
+                        }
+                    }
+                } catch (e: Exception) {}
+            }
+        }, 3000, 15000) // Проверка каждые 15 сек без прерывания аудио
+    }
+
     private fun setupPlayerListener() {
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
+            // Ловит встроенные метаданные (если сервер поддерживает Icy-MetaData напрямую)
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
-                
                 val info = listOf(title, artist).firstOrNull { it.isNotEmpty() && it != "Радио" && it != "Radyo" && it.lowercase() != "unknown" } ?: ""
 
                 if (info.isNotEmpty()) { 
@@ -609,6 +643,7 @@ class MainActivity : AppCompatActivity() {
         
         player?.stop() 
         player?.clearMediaItems()
+        metadataTimer?.cancel()
         currentSongMetadata = ""
         
         currentPlaylist = ArrayList(playlist)
@@ -624,6 +659,8 @@ class MainActivity : AppCompatActivity() {
         player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
+        
+        startMetadataFetcher(station.url, station.name)
     }
 
     private fun togglePlayPause() {
@@ -646,7 +683,6 @@ class MainActivity : AppCompatActivity() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             try {
-                // Отключен лимит, загружаем все доступные
                 val urlStr = if (isSearch) {
                     "https://all.api.radio-browser.info/json/stations/search?name=${URLEncoder.encode(endpoint, "UTF-8")}&limit=100000"
                 } else {
@@ -734,6 +770,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         unregisterReceiver(playerActionReceiver)
+        metadataTimer?.cancel()
         isRecording = false; cancelSleepTimer(); MediaController.releaseFuture(controllerFuture); super.onDestroy()
     }
 }
