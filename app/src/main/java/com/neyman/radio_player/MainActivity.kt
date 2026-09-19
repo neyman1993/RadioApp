@@ -71,9 +71,6 @@ class MainActivity : AppCompatActivity() {
     private var sleepRunnable: Runnable? = null
     private var isRecording = false
     private var recordThread: Thread? = null
-    
-    private var metadataTimer: Timer? = null
-    private var currentStreamUrlForMetadata = ""
 
     private val folderPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -115,7 +112,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Идеальный декодер для PKL файлов
     private val importFavoritesLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             thread {
@@ -128,8 +124,7 @@ class MainActivity : AppCompatActivity() {
                         val arr = JSONArray(fileText)
                         for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
                     } catch (e: Exception) {
-                        // Распарсим Pickle файл, ища ключи "name" и "url_resolved" или "url"
-                        val urlRegex = Regex("(https?://[a-zA-Z0-9./_\\-?=&:%]+)")
+                        val urlRegex = Regex("(https?://[\\w./_\\-?=&:%]+)")
                         val parts = fileText.split(Regex("name[Ф\\s]+М|name[\\s]+"))
                         
                         for (i in 1 until parts.size) {
@@ -392,7 +387,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
-        val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("По умолчанию: Music / radio_player_recordings", "Varsayılan: Music / radio_player_recordings")
+        val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("Все записи автоматически сохраняются в папку Music на вашем телефоне.", "Tüm kayıtlar telefonunuzdaki Music klasörüne otomatik olarak kaydedilir.")
         folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 14f; setPadding(0,0,0,16) }
         layout.addView(folderDisplay)
         layout.addView(Button(this).apply { text = getStr("Выбрать другую папку вручную", "Başka bir klasörü manuel seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
@@ -445,11 +440,47 @@ class MainActivity : AppCompatActivity() {
         }.show()
     }
 
+    // НОВОЕ: Одиночный скрытый запрос метаданных (только при нажатии копирования)
     private fun copySongMetadata(station: Station) {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val textToCopy = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
-        clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
-        Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getStr("Получение данных...", "Veri alınıyor..."), Toast.LENGTH_SHORT).show()
+        thread {
+            var titleToCopy = currentSongMetadata
+            if (titleToCopy.isEmpty()) {
+                try {
+                    val conn = URL(station.url).openConnection() as HttpURLConnection
+                    conn.setRequestProperty("Icy-MetaData", "1")
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                    conn.connectTimeout = 3000
+                    conn.readTimeout = 3000
+                    val metaint = conn.getHeaderField("icy-metaint")?.toIntOrNull()
+                    if (metaint != null) {
+                        val inputStream = conn.inputStream
+                        var bytesRead = 0
+                        while (bytesRead < metaint) {
+                            val skipped = inputStream.skip((metaint - bytesRead).toLong())
+                            if (skipped <= 0L) break
+                            bytesRead += skipped.toInt()
+                        }
+                        val metaLength = inputStream.read() * 16
+                        if (metaLength > 0) {
+                            val metaBuffer = ByteArray(metaLength)
+                            inputStream.read(metaBuffer, 0, metaLength)
+                            val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(String(metaBuffer, Charsets.UTF_8))
+                            if (matcher.find()) titleToCopy = matcher.group(1)?.trim() ?: ""
+                        }
+                    }
+                    conn.disconnect()
+                } catch (e: Exception) {}
+            }
+            
+            if (titleToCopy.isEmpty()) titleToCopy = station.name
+            
+            runOnUiThread {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", titleToCopy))
+                Toast.makeText(this@MainActivity, getStr("Скопировано: ", "Kopyalandı: ") + titleToCopy, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun showTimerDialog() {
@@ -515,63 +546,15 @@ class MainActivity : AppCompatActivity() {
     private fun showSearchDialog() {
         val input = EditText(this).apply { hint = getStr("Название", "Adı") }
         AlertDialog.Builder(this).setTitle(getStr("Поиск", "Arama")).setView(input)
-            .setPositiveButton(getStr("Найти", "Bul")) { _, _ -> val q = input.text.toString().trim(); if (q.isNotEmpty()) { currentMode = "SEARCH_RESULTS"; updateUIForMode(); fetchStations("byname/" + URLEncoder.encode(q, "UTF-8")) } }
-            .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
-    }
-
-    private fun startMetadataFetcher(urlStr: String, stationName: String) {
-        metadataTimer?.cancel()
-        currentStreamUrlForMetadata = urlStr
-        
-        metadataTimer = Timer()
-        metadataTimer?.schedule(object : TimerTask() {
-            override fun run() {
-                try {
-                    val url = URL(urlStr)
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.setRequestProperty("Icy-MetaData", "1")
-                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                    conn.connectTimeout = 5000
-                    conn.readTimeout = 5000
-                    
-                    val metaintStr = conn.getHeaderField("icy-metaint")
-                    if (metaintStr != null) {
-                        val metaint = metaintStr.toInt()
-                        val inputStream = conn.inputStream
-                        
-                        var bytesRead = 0
-                        while (bytesRead < metaint) {
-                            val skipped = inputStream.skip((metaint - bytesRead).toLong())
-                            if (skipped <= 0) break
-                            bytesRead += skipped.toInt()
-                        }
-                        
-                        val metaLengthByte = inputStream.read()
-                        if (metaLengthByte > 0) {
-                            val metaLength = metaLengthByte * 16
-                            val metaBuffer = ByteArray(metaLength)
-                            inputStream.read(metaBuffer, 0, metaLength)
-                            val metaString = String(metaBuffer, Charsets.UTF_8)
-                            
-                            val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(metaString)
-                            if (matcher.find()) {
-                                val title = matcher.group(1)?.trim() ?: ""
-                                if (title.isNotEmpty() && title != currentSongMetadata && title.lowercase() != stationName.lowercase()) {
-                                    currentSongMetadata = title
-                                    runOnUiThread {
-                                        stationNameText.text = "$stationName\n$title"
-                                        val mediaMeta = MediaMetadata.Builder().setTitle(title).setArtist(stationName).build()
-                                        val mediaItem = MediaItem.Builder().setMediaId(urlStr).setUri(urlStr).setMediaMetadata(mediaMeta).build()
-                                        player?.setMediaItem(mediaItem)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    conn.disconnect()
-                } catch (e: Exception) {}
+            .setPositiveButton(getStr("Найти", "Bul")) { _, _ -> 
+                val q = input.text.toString().trim()
+                if (q.isNotEmpty()) { 
+                    currentMode = "SEARCH_RESULTS"
+                    updateUIForMode()
+                    fetchStations(q, isSearch = true) 
+                } 
             }
-        }, 3000, 15000)
+            .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
     private fun setupPlayerListener() {
@@ -602,10 +585,7 @@ class MainActivity : AppCompatActivity() {
     private fun playStation(index: Int, playlist: List<Station>) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
-        // ЖЕСТКИЙ СТОП ДЛЯ ПРЕДОТВРАЩЕНИЯ НАЛОЖЕНИЯ
         player?.stop() 
-        player?.clearMediaItems()
-        metadataTimer?.cancel()
         currentSongMetadata = ""
         
         currentPlaylist = ArrayList(playlist)
@@ -621,8 +601,6 @@ class MainActivity : AppCompatActivity() {
         player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
-        
-        startMetadataFetcher(station.url, station.name)
     }
 
     private fun togglePlayPause() {
@@ -641,11 +619,18 @@ class MainActivity : AppCompatActivity() {
         playStation(prevIdx, currentPlaylist)
     }
 
-    private fun fetchStations(endpoint: String) {
+    private fun fetchStations(endpoint: String, isSearch: Boolean = false) {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             try {
-                val res = fetchJson("https://all.api.radio-browser.info/json/stations/$endpoint?limit=200")
+                // НОВОЕ: Отключен лимит, правильная кодировка для поиска
+                val urlStr = if (isSearch) {
+                    "https://all.api.radio-browser.info/json/stations/search?name=${URLEncoder.encode(endpoint, "UTF-8")}&limit=100000"
+                } else {
+                    "https://all.api.radio-browser.info/json/stations/$endpoint?limit=100000"
+                }
+                
+                val res = fetchJson(urlStr)
                 var rawList = ArrayList<JSONObject>()
                 for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
                 if (settings.hideDuplicates) { rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList)) }
@@ -690,7 +675,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun fetchJson(url: String): JSONArray {
         return try {
-            val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=10000; readTimeout=10000; setRequestProperty("User-Agent", "radio_player") }
+            val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=15000; readTimeout=15000; setRequestProperty("User-Agent", "radio_player") }
             JSONArray(c.inputStream.bufferedReader().use { it.readText() })
         } catch (e: Exception) { JSONArray() }
     }
@@ -725,7 +710,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        metadataTimer?.cancel()
         isRecording = false; cancelSleepTimer(); MediaController.releaseFuture(controllerFuture); super.onDestroy()
     }
 }
