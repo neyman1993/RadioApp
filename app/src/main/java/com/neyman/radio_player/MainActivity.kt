@@ -39,6 +39,8 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.regex.Pattern
+import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -77,7 +79,6 @@ class MainActivity : AppCompatActivity() {
     private var metadataTimer: Timer? = null
     private var currentStreamUrlForMetadata = ""
 
-    // Прием команд от кнопок гарнитуры и шторки
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -496,10 +497,21 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
+    private fun updateSongInfo(title: String) {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isNotEmpty() && cleanTitle != currentSongMetadata && cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
+            currentSongMetadata = cleanTitle
+            val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+            runOnUiThread {
+                stationNameText.text = "$stName\n$cleanTitle"
+                stationNameText.announceForAccessibility(cleanTitle)
+            }
+        }
+    }
+
     private fun copySongMetadata(station: Station) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val isCurrentPlaying = (currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url)
-        val textToCopy = if (isCurrentPlaying && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        val textToCopy = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
         clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
         Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
     }
@@ -578,7 +590,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // ИДЕАЛЬНАЯ КОПИЯ АЛГОРИТМА ИЗ ТВОЕГО PYTHON КОДА
+    // НАСТОЯЩИЙ SOCKET-ПАРСЕР КАК В ТВОЕМ PYTHON-КОДЕ (Безотказный и без заиканий)
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -590,7 +602,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val parsedUrl = URL(urlStr)
                     val host = parsedUrl.host
-                    val port = if (parsedUrl.port == -1) parsedUrl.defaultPort else parsedUrl.port
+                    val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
                     val protocol = parsedUrl.protocol
 
                     // 1. Icecast API
@@ -616,48 +628,68 @@ class MainActivity : AppCompatActivity() {
                         try {
                             val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
                             conn.connectTimeout = 2000; conn.readTimeout = 2000
-                            val matcher = java.util.regex.Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
+                            val matcher = Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
                             if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
                         } catch(e: Exception){}
                     }
 
-                    // 4. RAW Чтение (Для Mydonose / JoyTurk) как в Python: 
-                    // Скачиваем 8КБ и жестко обрываем соединение, чтобы не прерывать основной аудиопоток ExoPlayer!
+                    // 4. НАСТОЯЩИЙ SOCKET ICY (Точно как в Python: решает проблему с Mydonose и JoyTurk)
                     if (title.isEmpty()) {
                         try {
-                            val conn = URL(urlStr).openConnection() as HttpURLConnection
-                            conn.setRequestProperty("Icy-MetaData", "1")
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                            conn.setRequestProperty("Connection", "close") 
-                            conn.connectTimeout = 3000; conn.readTimeout = 3000
-                            
-                            val stream = conn.inputStream
-                            val buffer = ByteArray(8192)
-                            var readTotal = 0
-                            while (readTotal < 8192) {
-                                val r = stream.read(buffer, readTotal, 8192 - readTotal)
-                                if (r == -1) break
-                                readTotal += r
+                            val socket = if (protocol == "https") {
+                                javax.net.ssl.SSLSocketFactory.getDefault().createSocket(host, port)
+                            } else {
+                                java.net.Socket(host, port)
                             }
-                            stream.close()
-                            conn.disconnect() // Мгновенный разрыв
+                            socket.soTimeout = 3000
+                            val out = PrintWriter(socket.getOutputStream(), true)
+                            val input = socket.getInputStream()
                             
-                            val rawData = String(buffer, 0, readTotal, Charsets.UTF_8)
-                            val matcher = java.util.regex.Pattern.compile("StreamTitle='([^']*)'").matcher(rawData)
-                            if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
+                            val path = if (parsedUrl.file.isEmpty()) "/" else parsedUrl.file
+                            out.print("GET $path HTTP/1.0\r\n")
+                            out.print("Host: $host\r\n")
+                            out.print("Icy-MetaData: 1\r\n")
+                            out.print("User-Agent: Mozilla/5.0\r\n")
+                            out.print("Connection: close\r\n\r\n")
+                            out.flush()
+                            
+                            val reader = BufferedReader(InputStreamReader(input, "UTF-8"))
+                            var metaint = 0
+                            while (true) {
+                                val line = reader.readLine()
+                                if (line.isNullOrEmpty()) break
+                                if (line.lowercase().startsWith("icy-metaint:")) {
+                                    metaint = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                                }
+                            }
+                            
+                            if (metaint > 0) {
+                                var bytesRead = 0
+                                val skipBuffer = ByteArray(4096)
+                                while (bytesRead < metaint) {
+                                    val toRead = kotlin.math.min(4096, metaint - bytesRead)
+                                    val r = input.read(skipBuffer, 0, toRead)
+                                    if (r == -1) break
+                                    bytesRead += r
+                                }
+                                val metaLength = input.read() * 16
+                                if (metaLength > 0) {
+                                    val metaBuffer = ByteArray(metaLength)
+                                    var metaRead = 0
+                                    while (metaRead < metaLength) {
+                                        val r = input.read(metaBuffer, metaRead, metaLength - metaRead)
+                                        if (r == -1) break
+                                        metaRead += r
+                                    }
+                                    val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(String(metaBuffer, Charsets.UTF_8))
+                                    if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
+                                }
+                            }
+                            socket.close() // Быстро закрываем, чтобы не прерывать основной аудиопоток
                         } catch (e: Exception) {}
                     }
 
-                    if (title.isNotEmpty()) {
-                        val cleanTitle = title.trim()
-                        if (cleanTitle != currentSongMetadata && cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
-                            currentSongMetadata = cleanTitle
-                            runOnUiThread {
-                                stationNameText.text = "$stationName\n$cleanTitle"
-                                stationNameText.announceForAccessibility(cleanTitle)
-                            }
-                        }
-                    }
+                    if (title.isNotEmpty()) updateSongInfo(title)
                 } catch (e: Exception) {}
             }
         }, 3000, 15000)
@@ -667,17 +699,12 @@ class MainActivity : AppCompatActivity() {
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
-            // Если ты переключил трек с ГАРНИТУРЫ, то UI тоже обновится
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                if (mediaItem != null) {
-                    val newIndex = currentPlaylist.indexOfFirst { it.url == mediaItem.mediaId }
-                    if (newIndex != -1 && newIndex != currentStationIndex) {
-                        currentStationIndex = newIndex
-                        val st = currentPlaylist[newIndex]
-                        currentSongMetadata = ""
-                        stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + st.name
-                        stationNameText.announceForAccessibility(st.name)
-                        startMetadataFetcher(st.url, st.name)
+            // Убираем слово "Загрузка...", как только плеер начал играть
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    if (currentSongMetadata.isEmpty()) {
+                        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                        runOnUiThread { stationNameText.text = stName }
                     }
                 }
             }
@@ -705,16 +732,10 @@ class MainActivity : AppCompatActivity() {
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
-        // Загружаем всю текущую категорию в плеер, чтобы гарнитура могла листать треки
-        val mediaItems = currentPlaylist.map { st ->
-            MediaItem.Builder()
-                .setMediaId(st.url)
-                .setUri(st.url)
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(st.name).setArtist("Радио").build())
-                .build()
-        }
+        val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
+        val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
         
-        player?.setMediaItems(mediaItems, index, 0)
+        player?.setMediaItem(mediaItem)
         player?.prepare() 
         player?.play()
         
@@ -725,22 +746,17 @@ class MainActivity : AppCompatActivity() {
         if (player?.isPlaying == true) player?.pause() else player?.play()
     }
 
+    // Ручное переключение для гарнитуры и кнопок
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
-        if (player?.hasNextMediaItem() == true) {
-            player?.seekToNextMediaItem()
-        } else {
-            playStation(0, currentPlaylist)
-        }
+        val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
+        playStation(nextIdx, currentPlaylist)
     }
 
     private fun playPrev() {
         if (currentPlaylist.isEmpty()) return
-        if (player?.hasPreviousMediaItem() == true) {
-            player?.seekToPreviousMediaItem()
-        } else {
-            playStation(currentPlaylist.size - 1, currentPlaylist)
-        }
+        val prevIdx = if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1
+        playStation(prevIdx, currentPlaylist)
     }
 
     private fun fetchStations(endpoint: String, isSearch: Boolean = false) {

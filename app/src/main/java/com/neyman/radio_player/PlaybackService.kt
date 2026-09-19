@@ -50,7 +50,7 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
 
-        // ПЕРЕХВАТЧИК: Жестко разрешаем кнопки гарнитуры и отправляем сигнал в MainActivity
+        // ПЕРЕХВАТЧИК ГАРНИТУРЫ: обманываем систему, чтобы кнопки Вперед/Назад работали всегда
         val forwardingPlayer = object : ForwardingPlayer(player) {
             override fun hasNextMediaItem() = true
             override fun hasPreviousMediaItem() = true
@@ -68,7 +68,6 @@ class PlaybackService : MediaSessionService() {
             }
         }
         
-        // Кнопка Закрыть в шторке
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
             .setIconResId(android.R.drawable.ic_menu_close_clear_cancel)
