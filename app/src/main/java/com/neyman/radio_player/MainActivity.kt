@@ -72,6 +72,17 @@ class MainActivity : AppCompatActivity() {
     private var isRecording = false
     private var recordThread: Thread? = null
 
+    // НОВОЕ: Слушатель для кнопок гарнитуры и шторки уведомлений
+    private val playerActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                "com.neyman.radio.NEXT" -> playNext()
+                "com.neyman.radio.PREV" -> playPrev()
+                "com.neyman.radio.STOP_APP" -> attemptExit()
+            }
+        }
+    }
+
     private val folderPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -90,7 +101,6 @@ class MainActivity : AppCompatActivity() {
                     val logText = StringBuilder()
                     var line: String?
                     while (reader.readLine().also { line = it } != null) { logText.append(line).append("\n") }
-                    
                     contentResolver.openOutputStream(uri)?.use { it.write(logText.toString().toByteArray()) }
                     runOnUiThread { Toast.makeText(this@MainActivity, getStr("Лог сохранен!", "Günlük kaydedildi!"), Toast.LENGTH_LONG).show() }
                 } catch (e: Exception) {
@@ -112,32 +122,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // НОВОЕ: Настоящий парсер Python файлов Pickle!
     private val importFavoritesLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             thread {
                 try {
                     val bytes = contentResolver.openInputStream(uri)?.readBytes() ?: return@thread
-                    val fileText = String(bytes, Charsets.UTF_8)
                     val newFavs = ArrayList<Station>()
 
                     try {
+                        // 1. Попытка прочитать как обычный JSON
+                        val fileText = String(bytes, Charsets.UTF_8)
                         val arr = JSONArray(fileText)
                         for (i in 0 until arr.length()) newFavs.add(Station.fromJson(arr.getJSONObject(i)))
                     } catch (e: Exception) {
-                        val urlRegex = Regex("(https?://[\\w./_\\-?=&:%]+)")
-                        val parts = fileText.split(Regex("name[Ф\\s]+М|name[\\s]+"))
-                        
-                        for (i in 1 until parts.size) {
-                            val part = parts[i]
-                            val nameMatch = Regex("^([\\p{L}\\p{N}\\s\\-.]+)").find(part.replace("Ф", " "))
-                            var name = nameMatch?.value?.trim() ?: ""
-                            if (name.isEmpty() || name.length < 2) continue
-                            
-                            val urlMatch = urlRegex.find(part)
-                            if (urlMatch != null) {
-                                val urlStr = urlMatch.value
-                                if (newFavs.none { it.url == urlStr }) {
-                                    newFavs.add(Station(name, urlStr, "Imported"))
+                        // 2. Использование нативной библиотеки Pickle для Python формата
+                        val unpickler = net.razorvine.pickle.Unpickler()
+                        val data = unpickler.loads(bytes)
+                        if (data is ArrayList<*>) {
+                            for (item in data) {
+                                if (item is HashMap<*, *>) {
+                                    val name = item["name"] as? String ?: ""
+                                    val url = item["url_resolved"] as? String ?: item["url"] as? String ?: ""
+                                    if (name.isNotEmpty() && url.isNotEmpty() && newFavs.none { it.url == url }) {
+                                        newFavs.add(Station(name, url, "Imported"))
+                                    }
                                 }
                             }
                         }
@@ -168,6 +177,18 @@ class MainActivity : AppCompatActivity() {
         settings.applySettings()
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
+        
+        // Регистрация ресивера для кнопок гарнитуры
+        val filter = IntentFilter().apply {
+            addAction("com.neyman.radio.NEXT")
+            addAction("com.neyman.radio.PREV")
+            addAction("com.neyman.radio.STOP_APP")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(playerActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(playerActionReceiver, filter)
+        }
         
         val permissionsToRequest = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -300,7 +321,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
-        val showMenu = currentMode == "MAIN_MENU"
+        val showMenu = currentMode != "SETTINGS"
         for (i in 0 until menu.size()) { menu.getItem(i).isVisible = showMenu }
         return super.onPrepareOptionsMenu(menu)
     }
@@ -440,7 +461,7 @@ class MainActivity : AppCompatActivity() {
         }.show()
     }
 
-    // НОВОЕ: Одиночный скрытый запрос метаданных (только при нажатии копирования)
+    // НОВОЕ: Ручное копирование метаданных как в скрипте Python (работает всегда)
     private fun copySongMetadata(station: Station) {
         Toast.makeText(this, getStr("Получение данных...", "Veri alınıyor..."), Toast.LENGTH_SHORT).show()
         thread {
@@ -564,9 +585,10 @@ class MainActivity : AppCompatActivity() {
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
-                val info = if (artist.isNotEmpty() && title.isNotEmpty()) "$artist - $title" else title
                 
-                if (info.isNotEmpty() && artist != "Радио" && artist != "Radyo") { 
+                val info = listOf(title, artist).firstOrNull { it.isNotEmpty() && it != "Радио" && it != "Radyo" && it.lowercase() != "unknown" } ?: ""
+
+                if (info.isNotEmpty()) { 
                     currentSongMetadata = info
                     val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     stationNameText.text = "$stName\n$info"
@@ -586,6 +608,7 @@ class MainActivity : AppCompatActivity() {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
         player?.stop() 
+        player?.clearMediaItems()
         currentSongMetadata = ""
         
         currentPlaylist = ArrayList(playlist)
@@ -623,7 +646,7 @@ class MainActivity : AppCompatActivity() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             try {
-                // НОВОЕ: Отключен лимит, правильная кодировка для поиска
+                // Отключен лимит, загружаем все доступные
                 val urlStr = if (isSearch) {
                     "https://all.api.radio-browser.info/json/stations/search?name=${URLEncoder.encode(endpoint, "UTF-8")}&limit=100000"
                 } else {
@@ -710,6 +733,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        unregisterReceiver(playerActionReceiver)
         isRecording = false; cancelSleepTimer(); MediaController.releaseFuture(controllerFuture); super.onDestroy()
     }
 }

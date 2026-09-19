@@ -1,7 +1,9 @@
 package com.neyman.radio_player
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -35,10 +37,12 @@ class PlaybackService : MediaSessionService() {
                 bufferSec * 1000
             ).build()
 
+        // Включаем нативную поддержку метаданных Icy-MetaData (Без заиканий!)
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
+            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1"))
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -47,8 +51,23 @@ class PlaybackService : MediaSessionService() {
             .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .build()
+
+        // Перехватываем аппаратные кнопки гарнитуры
+        val forwardingPlayer = object : ForwardingPlayer(player) {
+            override fun seekToNextMediaItem() { sendBroadcast(Intent("com.neyman.radio.NEXT")) }
+            override fun seekToPreviousMediaItem() { sendBroadcast(Intent("com.neyman.radio.PREV")) }
+            override fun seekToNext() { sendBroadcast(Intent("com.neyman.radio.NEXT")) }
+            override fun seekToPrevious() { sendBroadcast(Intent("com.neyman.radio.PREV")) }
+            override fun getAvailableCommands(): Player.Commands {
+                return super.getAvailableCommands().buildUpon()
+                    .add(Player.COMMAND_SEEK_TO_NEXT)
+                    .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+                    .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                    .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .build()
+            }
+        }
         
-        // Кнопки для панели уведомлений и экрана блокировки
         val prevButton = CommandButton.Builder()
             .setDisplayName("Предыдущий")
             .setIconResId(android.R.drawable.ic_media_previous)
@@ -75,11 +94,12 @@ class PlaybackService : MediaSessionService() {
                 args: Bundle
             ): ListenableFuture<SessionResult> {
                 when (customCommand.customAction) {
-                    "ACTION_PREV" -> player.seekToPreviousMediaItem()
-                    "ACTION_NEXT" -> player.seekToNextMediaItem()
+                    "ACTION_PREV" -> sendBroadcast(Intent("com.neyman.radio.PREV"))
+                    "ACTION_NEXT" -> sendBroadcast(Intent("com.neyman.radio.NEXT"))
                     "ACTION_STOP_APP" -> {
                         player.stop()
                         player.clearMediaItems()
+                        sendBroadcast(Intent("com.neyman.radio.STOP_APP"))
                         stopSelf()
                     }
                 }
@@ -94,14 +114,11 @@ class PlaybackService : MediaSessionService() {
                     .add(SessionCommand("ACTION_STOP_APP", Bundle.EMPTY))
                     .build()
                 
-                return MediaSession.ConnectionResult.accept(
-                    availableSessionCommands,
-                    connectionResult.availablePlayerCommands
-                )
+                return MediaSession.ConnectionResult.accept(availableSessionCommands, connectionResult.availablePlayerCommands)
             }
         }
 
-        mediaSession = MediaSession.Builder(this, player)
+        mediaSession = MediaSession.Builder(this, forwardingPlayer)
             .setCallback(callback)
             .setCustomLayout(listOf(prevButton, nextButton, stopButton))
             .build()
@@ -110,10 +127,7 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
-        mediaSession?.run {
-            player.release()
-            release()
-        }
+        mediaSession?.run { player.release(); release() }
         mediaSession = null
         super.onDestroy()
     }
