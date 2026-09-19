@@ -41,7 +41,6 @@ class PlaybackService : MediaSessionService() {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
-            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1")) // Включаем встроенные метаданные
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -51,8 +50,14 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
 
-        // ПЕРЕХВАТЧИК: Разрешаем системе использовать кнопки гарнитуры и отправляем сигнал в MainActivity
+        // ПЕРЕХВАТЧИК: Жестко разрешаем кнопки гарнитуры и отправляем сигнал в MainActivity
         val forwardingPlayer = object : ForwardingPlayer(player) {
+            override fun hasNextMediaItem() = true
+            override fun hasPreviousMediaItem() = true
+            override fun seekToNext() { sendCommandToActivity("com.neyman.radio.NEXT") }
+            override fun seekToPrevious() { sendCommandToActivity("com.neyman.radio.PREV") }
+            override fun seekToNextMediaItem() { sendCommandToActivity("com.neyman.radio.NEXT") }
+            override fun seekToPreviousMediaItem() { sendCommandToActivity("com.neyman.radio.PREV") }
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands().buildUpon()
                     .add(Player.COMMAND_SEEK_TO_NEXT)
@@ -61,13 +66,9 @@ class PlaybackService : MediaSessionService() {
                     .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
                     .build()
             }
-            override fun seekToNext() { sendCommandToActivity("com.neyman.radio.NEXT") }
-            override fun seekToPrevious() { sendCommandToActivity("com.neyman.radio.PREV") }
-            override fun seekToNextMediaItem() { sendCommandToActivity("com.neyman.radio.NEXT") }
-            override fun seekToPreviousMediaItem() { sendCommandToActivity("com.neyman.radio.PREV") }
         }
         
-        // Создаем ТОЛЬКО ОДНУ кнопку - "Закрыть", остальные Android нарисует сам (чтобы не было дубликатов)
+        // Кнопка Закрыть в шторке
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
             .setIconResId(android.R.drawable.ic_menu_close_clear_cancel)
@@ -101,7 +102,7 @@ class PlaybackService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, forwardingPlayer)
             .setCallback(callback)
-            .setCustomLayout(listOf(stopButton)) // Только крестик, остальное от системы
+            .setCustomLayout(listOf(stopButton))
             .build()
     }
 

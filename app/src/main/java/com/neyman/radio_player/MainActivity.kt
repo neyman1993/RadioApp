@@ -39,7 +39,6 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.regex.Pattern
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -78,7 +77,7 @@ class MainActivity : AppCompatActivity() {
     private var metadataTimer: Timer? = null
     private var currentStreamUrlForMetadata = ""
 
-    // Прием команд от кнопок ГАРНИТУРЫ и шторки
+    // Прием команд от кнопок гарнитуры и шторки
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -179,13 +178,16 @@ class MainActivity : AppCompatActivity() {
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
         
-        // Регистрация ресивера для ГАРНИТУРЫ
         val filter = IntentFilter().apply {
             addAction("com.neyman.radio.NEXT")
             addAction("com.neyman.radio.PREV")
             addAction("com.neyman.radio.STOP_APP")
         }
-        ContextCompat.registerReceiver(this, playerActionReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(playerActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(playerActionReceiver, filter)
+        }
         
         val permissionsToRequest = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -211,7 +213,6 @@ class MainActivity : AppCompatActivity() {
 
         listView = ListView(this)
         
-        // TALKBACK Жесты: Свайп вверх/вниз для меню станции
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
@@ -461,7 +462,6 @@ class MainActivity : AppCompatActivity() {
         val station = currentPlaylist[currentStationIndex]
         val isFav = favorites.any { it.url == station.url }
         
-        // НАСТРОЕК ЗДЕСЬ БОЛЬШЕ НЕТ
         val options = arrayOf(
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
@@ -496,22 +496,10 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
-    // Обновление текста песни с потокобезопасностью
-    private fun updateSongInfo(title: String) {
-        val cleanTitle = title.trim()
-        if (cleanTitle.isNotEmpty() && cleanTitle != currentSongMetadata && cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
-            currentSongMetadata = cleanTitle
-            val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-            runOnUiThread {
-                stationNameText.text = "$stName\n$cleanTitle"
-                stationNameText.announceForAccessibility(cleanTitle)
-            }
-        }
-    }
-
     private fun copySongMetadata(station: Station) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val textToCopy = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        val isCurrentPlaying = (currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url)
+        val textToCopy = if (isCurrentPlaying && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
         clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
         Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
     }
@@ -590,7 +578,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // БЕЗОПАСНЫЙ ИДЕАЛЬНЫЙ ПАРСЕР ИЗ ТВОЕГО PYTHON КОДА (Опрашивает только API серверов, НЕ прерывает аудио)
+    // ИДЕАЛЬНАЯ КОПИЯ АЛГОРИТМА ИЗ ТВОЕГО PYTHON КОДА
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -598,51 +586,77 @@ class MainActivity : AppCompatActivity() {
         metadataTimer = Timer()
         metadataTimer?.schedule(object : TimerTask() {
             override fun run() {
+                var title = ""
                 try {
                     val parsedUrl = URL(urlStr)
                     val host = parsedUrl.host
                     val port = if (parsedUrl.port == -1) parsedUrl.defaultPort else parsedUrl.port
                     val protocol = parsedUrl.protocol
-                    
-                    var title = ""
 
+                    // 1. Icecast API
                     try {
-                        val statusUrl = URL("$protocol://$host:$port/status-json.xsl")
-                        val conn = statusUrl.openConnection() as HttpURLConnection
+                        val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
                         conn.connectTimeout = 2000; conn.readTimeout = 2000
-                        val res = conn.inputStream.bufferedReader().readText()
-                        val icestats = JSONObject(res).optJSONObject("icestats")
-                        val source = icestats?.opt("source")
-                        if (source is JSONArray && source.length() > 0) {
-                            title = source.getJSONObject(0).optString("title", "")
-                        } else if (source is JSONObject) {
-                            title = source.optString("title", "")
-                        }
-                    } catch (e: Exception){}
+                        val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
+                        if (source is JSONArray && source.length() > 0) title = source.getJSONObject(0).optString("title", "")
+                        else if (source is JSONObject) title = source.optString("title", "")
+                    } catch (e: Exception) {}
 
+                    // 2. Shoutcast JSON API
                     if (title.isEmpty()) {
                         try {
-                            val statsUrl = URL("$protocol://$host:$port/stats?json=1")
-                            val conn = statsUrl.openConnection() as HttpURLConnection
+                            val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
                             conn.connectTimeout = 2000; conn.readTimeout = 2000
-                            val res = conn.inputStream.bufferedReader().readText()
-                            title = JSONObject(res).optString("songtitle", "")
+                            title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
                         } catch(e: Exception){}
                     }
 
+                    // 3. Shoutcast XML (streamtheworld)
                     if (title.isEmpty()) {
                         try {
-                            val adminUrl = URL("$protocol://$host:$port/admin.cgi?mode=viewxml")
-                            val conn = adminUrl.openConnection() as HttpURLConnection
+                            val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
                             conn.connectTimeout = 2000; conn.readTimeout = 2000
-                            val res = conn.inputStream.bufferedReader().readText()
-                            val matcher = Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(res)
+                            val matcher = java.util.regex.Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
                             if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
                         } catch(e: Exception){}
                     }
 
+                    // 4. RAW Чтение (Для Mydonose / JoyTurk) как в Python: 
+                    // Скачиваем 8КБ и жестко обрываем соединение, чтобы не прерывать основной аудиопоток ExoPlayer!
+                    if (title.isEmpty()) {
+                        try {
+                            val conn = URL(urlStr).openConnection() as HttpURLConnection
+                            conn.setRequestProperty("Icy-MetaData", "1")
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                            conn.setRequestProperty("Connection", "close") 
+                            conn.connectTimeout = 3000; conn.readTimeout = 3000
+                            
+                            val stream = conn.inputStream
+                            val buffer = ByteArray(8192)
+                            var readTotal = 0
+                            while (readTotal < 8192) {
+                                val r = stream.read(buffer, readTotal, 8192 - readTotal)
+                                if (r == -1) break
+                                readTotal += r
+                            }
+                            stream.close()
+                            conn.disconnect() // Мгновенный разрыв
+                            
+                            val rawData = String(buffer, 0, readTotal, Charsets.UTF_8)
+                            val matcher = java.util.regex.Pattern.compile("StreamTitle='([^']*)'").matcher(rawData)
+                            if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
+                        } catch (e: Exception) {}
+                    }
+
                     if (title.isNotEmpty()) {
-                        updateSongInfo(title)
+                        val cleanTitle = title.trim()
+                        if (cleanTitle != currentSongMetadata && cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
+                            currentSongMetadata = cleanTitle
+                            runOnUiThread {
+                                stationNameText.text = "$stationName\n$cleanTitle"
+                                stationNameText.announceForAccessibility(cleanTitle)
+                            }
+                        }
                     }
                 } catch (e: Exception) {}
             }
@@ -653,26 +667,21 @@ class MainActivity : AppCompatActivity() {
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
-            // Нативный захват метаданных IcyInfo и ID3 прямо в ExoPlayer
-            override fun onMetadata(metadata: androidx.media3.common.Metadata) {
-                for (i in 0 until metadata.length()) {
-                    val entry = metadata.get(i)
-                    if (entry is androidx.media3.extractor.metadata.icy.IcyInfo) {
-                        entry.title?.let { updateSongInfo(it) }
-                    } else if (entry is androidx.media3.extractor.metadata.id3.TextInformationFrame) {
-                        if (entry.id == "TIT2" || entry.id == "TT2") updateSongInfo(entry.value)
+            // Если ты переключил трек с ГАРНИТУРЫ, то UI тоже обновится
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (mediaItem != null) {
+                    val newIndex = currentPlaylist.indexOfFirst { it.url == mediaItem.mediaId }
+                    if (newIndex != -1 && newIndex != currentStationIndex) {
+                        currentStationIndex = newIndex
+                        val st = currentPlaylist[newIndex]
+                        currentSongMetadata = ""
+                        stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + st.name
+                        stationNameText.announceForAccessibility(st.name)
+                        startMetadataFetcher(st.url, st.name)
                     }
                 }
             }
 
-            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-                val title = mediaMetadata.title?.toString() ?: ""
-                val displayTitle = mediaMetadata.displayTitle?.toString() ?: ""
-                val artist = mediaMetadata.artist?.toString() ?: ""
-                val info = listOf(title, displayTitle, artist).firstOrNull { it.isNotEmpty() && it != "Радио" && it != "Radyo" && it.lowercase() != "unknown" } ?: ""
-                if (info.isNotEmpty()) updateSongInfo(info)
-            }
-            
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
@@ -696,10 +705,16 @@ class MainActivity : AppCompatActivity() {
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
         stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
-        val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
-        val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
+        // Загружаем всю текущую категорию в плеер, чтобы гарнитура могла листать треки
+        val mediaItems = currentPlaylist.map { st ->
+            MediaItem.Builder()
+                .setMediaId(st.url)
+                .setUri(st.url)
+                .setMediaMetadata(MediaMetadata.Builder().setTitle(st.name).setArtist("Радио").build())
+                .build()
+        }
         
-        player?.setMediaItem(mediaItem)
+        player?.setMediaItems(mediaItems, index, 0)
         player?.prepare() 
         player?.play()
         
@@ -712,14 +727,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
-        val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
-        playStation(nextIdx, currentPlaylist)
+        if (player?.hasNextMediaItem() == true) {
+            player?.seekToNextMediaItem()
+        } else {
+            playStation(0, currentPlaylist)
+        }
     }
 
     private fun playPrev() {
         if (currentPlaylist.isEmpty()) return
-        val prevIdx = if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1
-        playStation(prevIdx, currentPlaylist)
+        if (player?.hasPreviousMediaItem() == true) {
+            player?.seekToPreviousMediaItem()
+        } else {
+            playStation(currentPlaylist.size - 1, currentPlaylist)
+        }
     }
 
     private fun fetchStations(endpoint: String, isSearch: Boolean = false) {
