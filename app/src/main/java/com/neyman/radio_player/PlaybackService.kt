@@ -37,11 +37,12 @@ class PlaybackService : MediaSessionService() {
                 bufferSec * 1000
             ).build()
 
+        // Включаем запрос метаданных в аудиопотоке (нативно, без заиканий)
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
-            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1")) // Включаем встроенные метаданные
+            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1"))
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -51,7 +52,7 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
 
-        // ПЕРЕХВАТЧИК: Разрешаем системе использовать кнопки гарнитуры (Даже если 1 станция)
+        // Перехватываем только команды, НЕ создавая дубликаты кнопок
         val forwardingPlayer = object : ForwardingPlayer(player) {
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands().buildUpon()
@@ -67,7 +68,7 @@ class PlaybackService : MediaSessionService() {
             override fun seekToPreviousMediaItem() { sendBroadcast(Intent("com.neyman.radio.PREV")) }
         }
         
-        // Кнопка закрыть для шторки уведомлений
+        // Создаем ТОЛЬКО ОДНУ кастомную кнопку - "Закрыть"
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
             .setIconResId(android.R.drawable.ic_menu_close_clear_cancel)
@@ -89,13 +90,28 @@ class PlaybackService : MediaSessionService() {
                 }
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
+            
+            override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                val connectionResult = super.onConnect(session, controller)
+                val availableSessionCommands = connectionResult.availableSessionCommands.buildUpon()
+                    .add(SessionCommand("ACTION_STOP_APP", Bundle.EMPTY))
+                    .build()
+                return MediaSession.ConnectionResult.accept(availableSessionCommands, connectionResult.availablePlayerCommands)
+            }
         }
 
-        // Регистрируем сессию (без дубликатов Пред/След кнопок)
         mediaSession = MediaSession.Builder(this, forwardingPlayer)
             .setCallback(callback)
-            .setCustomLayout(listOf(stopButton)) // Только крестик, остальные Android подставит сам
+            .setCustomLayout(listOf(stopButton))
             .build()
+    }
+
+    // Если смахнуть приложение из недавних, радио полностью выключится
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        player.stop()
+        player.clearMediaItems()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
