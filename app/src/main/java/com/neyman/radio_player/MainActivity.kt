@@ -75,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private var recordThread: Thread? = null
     
     private var metadataTimer: Timer? = null
+    private var currentStreamUrlForMetadata = "" // ИСПРАВЛЕНИЕ: Вернул недостающую переменную
 
     // Обработчик кнопок гарнитуры и шторки
     private val playerActionReceiver = object : BroadcastReceiver() {
@@ -293,6 +294,11 @@ class MainActivity : AppCompatActivity() {
             if (currentMode == "COUNTRIES") { loadStationsByCountry(countries[position].split(" (")[0]) } 
             else { playStation(position, if (currentMode == "FAVORITES") favorites else stations) }
         }
+        listView.setOnItemLongClickListener { _, _, position, _ ->
+            if (currentMode == "COUNTRIES") return@setOnItemLongClickListener false
+            val list = if (currentMode == "FAVORITES") favorites else stations
+            if (position in list.indices) { showStationListMenu(list[position]); true } else false
+        }
 
         val sessionToken = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
@@ -457,7 +463,7 @@ class MainActivity : AppCompatActivity() {
         val station = currentPlaylist[currentStationIndex]
         val isFav = favorites.any { it.url == station.url }
         
-        // Убрали Настройки из этого меню!
+        // Настроек здесь больше нет
         val options = arrayOf(
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
@@ -474,6 +480,20 @@ class MainActivity : AppCompatActivity() {
         }.show()
     }
 
+    private fun showStationListMenu(station: Station) {
+        val isFav = favorites.any { it.url == station.url }
+        val options = arrayOf(
+            if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
+            getStr("Поделиться ссылкой", "Bağlantıyı paylaş"), 
+            getStr("Информация о станции", "İstasyon bilgisi"),
+            getStr("Скопировать название песни", "Şarkı adını kopyala")
+        )
+        AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, which ->
+            when (which) { 0 -> toggleFavorite(station); 1 -> shareStation(station); 2 -> showStationInfo(station); 3 -> copySongMetadata(station) }
+        }.show()
+    }
+
+    // ИСПРАВЛЕНИЕ: Функция showStationInfo теперь добавлена ТОЛЬКО ОДИН РАЗ
     private fun showStationInfo(station: Station) {
         val info = getStr("Название: ", "Adı: ") + station.name + "\n" + getStr("Страна: ", "Ülke: ") + station.country + "\nURL: " + station.url
         AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
@@ -481,7 +501,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun copySongMetadata(station: Station) {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val textToCopy = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        val isCurrentPlaying = (currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url)
+        val textToCopy = if (isCurrentPlaying && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
         clipboard.setPrimaryClip(ClipData.newPlainText("Song Info", textToCopy))
         Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + textToCopy, Toast.LENGTH_SHORT).show()
     }
@@ -560,7 +581,6 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // НОВОЕ: Безопасный парсер метаданных из API (как в твоем Python скрипте), не трогает аудиопоток!
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -609,14 +629,13 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch (e: Exception) {}
             }
-        }, 3000, 15000) // Проверка каждые 15 сек без прерывания аудио
+        }, 3000, 15000)
     }
 
     private fun setupPlayerListener() {
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
-            // Ловит встроенные метаданные (если сервер поддерживает Icy-MetaData напрямую)
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
                 val title = mediaMetadata.title?.toString() ?: ""
                 val artist = mediaMetadata.artist?.toString() ?: ""
@@ -752,11 +771,6 @@ class MainActivity : AppCompatActivity() {
     private fun shareStation(station: Station) {
         val shareIntent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, station.name); putExtra(Intent.EXTRA_TEXT, getStr("Слушай ", "Dinle: ") + station.name + ": " + station.url) }
         startActivity(Intent.createChooser(shareIntent, getStr("Поделиться", "Paylaş")))
-    }
-
-    private fun showStationInfo(station: Station) {
-        val info = getStr("Название: ", "Adı: ") + station.name + "\n" + getStr("Страна: ", "Ülke: ") + station.country + "\nURL: " + station.url
-        AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
     private fun attemptExit() {
