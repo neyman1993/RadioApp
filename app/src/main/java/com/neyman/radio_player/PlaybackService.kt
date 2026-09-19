@@ -41,6 +41,7 @@ class PlaybackService : MediaSessionService() {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
+            .setDefaultRequestProperties(mapOf("Icy-MetaData" to "1"))
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -50,14 +51,16 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
 
-        // ПЕРЕХВАТЧИК ГАРНИТУРЫ: обманываем систему, чтобы кнопки Вперед/Назад работали всегда
+        // ПЕРЕХВАТЧИК ГАРНИТУРЫ: Жестко говорим системе, что кнопки Вперед/Назад всегда активны
         val forwardingPlayer = object : ForwardingPlayer(player) {
             override fun hasNextMediaItem() = true
             override fun hasPreviousMediaItem() = true
-            override fun seekToNext() { sendCommandToActivity("com.neyman.radio.NEXT") }
-            override fun seekToPrevious() { sendCommandToActivity("com.neyman.radio.PREV") }
+            
             override fun seekToNextMediaItem() { sendCommandToActivity("com.neyman.radio.NEXT") }
             override fun seekToPreviousMediaItem() { sendCommandToActivity("com.neyman.radio.PREV") }
+            override fun seekToNext() { sendCommandToActivity("com.neyman.radio.NEXT") }
+            override fun seekToPrevious() { sendCommandToActivity("com.neyman.radio.PREV") }
+            
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands().buildUpon()
                     .add(Player.COMMAND_SEEK_TO_NEXT)
@@ -68,6 +71,7 @@ class PlaybackService : MediaSessionService() {
             }
         }
         
+        // Кнопка "Закрыть" в шторке
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
             .setIconResId(android.R.drawable.ic_menu_close_clear_cancel)

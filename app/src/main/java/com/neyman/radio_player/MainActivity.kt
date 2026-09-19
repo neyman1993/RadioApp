@@ -40,7 +40,6 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.regex.Pattern
-import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -79,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private var metadataTimer: Timer? = null
     private var currentStreamUrlForMetadata = ""
 
+    // Прием команд от кнопок гарнитуры
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -214,6 +214,7 @@ class MainActivity : AppCompatActivity() {
 
         listView = ListView(this)
         
+        // ЖЕСТЫ TALKBACK: Вверх/вниз вызывает эти действия
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
@@ -463,6 +464,7 @@ class MainActivity : AppCompatActivity() {
         val station = currentPlaylist[currentStationIndex]
         val isFav = favorites.any { it.url == station.url }
         
+        // Настройки убраны
         val options = arrayOf(
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
@@ -504,7 +506,7 @@ class MainActivity : AppCompatActivity() {
             val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
             runOnUiThread {
                 stationNameText.text = "$stName\n$cleanTitle"
-                stationNameText.announceForAccessibility(cleanTitle)
+                // Теперь TalkBack не озвучивает каждое изменение автоматически, только по фокусу
             }
         }
     }
@@ -590,7 +592,76 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // НАСТОЯЩИЙ SOCKET-ПАРСЕР КАК В ТВОЕМ PYTHON-КОДЕ (Безотказный и без заиканий)
+    // НАСТОЯЩИЙ SOCKET-ПАРСЕР ДЛЯ МЕТАДАННЫХ БЕЗ ЗАИКАНИЙ (Копия логики Python)
+    private fun getIcyMetadataRawSocket(urlStr: String): String {
+        var title = ""
+        try {
+            val url = URL(urlStr)
+            val host = url.host
+            val port = if (url.port != -1) url.port else url.defaultPort
+            val isHttps = url.protocol == "https"
+            
+            val socket = if (isHttps) {
+                javax.net.ssl.SSLSocketFactory.getDefault().createSocket(host, port)
+            } else {
+                java.net.Socket(host, port)
+            }
+            socket.soTimeout = 4000
+            
+            val out = PrintWriter(OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true)
+            val path = if (url.file.isEmpty()) "/" else url.file
+            
+            // Запрос HTTP/1.0 исключает Chunked Encoding
+            out.print("GET $path HTTP/1.0\r\n")
+            out.print("Host: $host\r\n")
+            out.print("Icy-MetaData: 1\r\n")
+            out.print("User-Agent: Mozilla/5.0\r\n")
+            out.print("Accept: */*\r\n")
+            out.print("Connection: close\r\n\r\n")
+            out.flush()
+            
+            val inputStream = socket.getInputStream()
+            val reader = BufferedReader(InputStreamReader(inputStream, "UTF-8"))
+            var metaint = 0
+            
+            while (true) {
+                val line = reader.readLine()
+                if (line.isNullOrEmpty()) break
+                if (line.lowercase().startsWith("icy-metaint:")) {
+                    metaint = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                }
+            }
+            
+            if (metaint > 0) {
+                var bytesRead = 0
+                val skipBuffer = ByteArray(4096)
+                while (bytesRead < metaint) {
+                    val toRead = kotlin.math.min(4096, metaint - bytesRead)
+                    val r = inputStream.read(skipBuffer, 0, toRead)
+                    if (r == -1) break
+                    bytesRead += r
+                }
+                
+                val metaLenByte = inputStream.read()
+                if (metaLenByte > 0) {
+                    val metaLength = metaLenByte * 16
+                    val metaBuffer = ByteArray(metaLength)
+                    var metaRead = 0
+                    while (metaRead < metaLength) {
+                        val r = inputStream.read(metaBuffer, metaRead, metaLength - metaRead)
+                        if (r == -1) break
+                        metaRead += r
+                    }
+                    val metaStr = String(metaBuffer, Charsets.UTF_8)
+                    val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(metaStr)
+                    if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
+                }
+            }
+            socket.close()
+        } catch (e: Exception) {}
+        return title
+    }
+
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -598,99 +669,24 @@ class MainActivity : AppCompatActivity() {
         metadataTimer = Timer()
         metadataTimer?.schedule(object : TimerTask() {
             override fun run() {
-                var title = ""
-                try {
-                    val parsedUrl = URL(urlStr)
-                    val host = parsedUrl.host
-                    val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
-                    val protocol = parsedUrl.protocol
+                var title = getIcyMetadataRawSocket(urlStr)
 
-                    // 1. Icecast API
+                if (title.isEmpty()) {
                     try {
-                        val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
-                        conn.connectTimeout = 2000; conn.readTimeout = 2000
-                        val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
-                        if (source is JSONArray && source.length() > 0) title = source.getJSONObject(0).optString("title", "")
-                        else if (source is JSONObject) title = source.optString("title", "")
-                    } catch (e: Exception) {}
+                        val parsedUrl = URL(urlStr)
+                        val host = parsedUrl.host
+                        val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
+                        val protocol = parsedUrl.protocol
 
-                    // 2. Shoutcast JSON API
-                    if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
                             conn.connectTimeout = 2000; conn.readTimeout = 2000
                             title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
                         } catch(e: Exception){}
-                    }
+                    } catch(e: Exception){}
+                }
 
-                    // 3. Shoutcast XML (streamtheworld)
-                    if (title.isEmpty()) {
-                        try {
-                            val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
-                            conn.connectTimeout = 2000; conn.readTimeout = 2000
-                            val matcher = Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
-                            if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
-                        } catch(e: Exception){}
-                    }
-
-                    // 4. НАСТОЯЩИЙ SOCKET ICY (Точно как в Python: решает проблему с Mydonose и JoyTurk)
-                    if (title.isEmpty()) {
-                        try {
-                            val socket = if (protocol == "https") {
-                                javax.net.ssl.SSLSocketFactory.getDefault().createSocket(host, port)
-                            } else {
-                                java.net.Socket(host, port)
-                            }
-                            socket.soTimeout = 3000
-                            val out = PrintWriter(socket.getOutputStream(), true)
-                            val input = socket.getInputStream()
-                            
-                            val path = if (parsedUrl.file.isEmpty()) "/" else parsedUrl.file
-                            out.print("GET $path HTTP/1.0\r\n")
-                            out.print("Host: $host\r\n")
-                            out.print("Icy-MetaData: 1\r\n")
-                            out.print("User-Agent: Mozilla/5.0\r\n")
-                            out.print("Connection: close\r\n\r\n")
-                            out.flush()
-                            
-                            val reader = BufferedReader(InputStreamReader(input, "UTF-8"))
-                            var metaint = 0
-                            while (true) {
-                                val line = reader.readLine()
-                                if (line.isNullOrEmpty()) break
-                                if (line.lowercase().startsWith("icy-metaint:")) {
-                                    metaint = line.substringAfter(":").trim().toIntOrNull() ?: 0
-                                }
-                            }
-                            
-                            if (metaint > 0) {
-                                var bytesRead = 0
-                                val skipBuffer = ByteArray(4096)
-                                while (bytesRead < metaint) {
-                                    val toRead = kotlin.math.min(4096, metaint - bytesRead)
-                                    val r = input.read(skipBuffer, 0, toRead)
-                                    if (r == -1) break
-                                    bytesRead += r
-                                }
-                                val metaLength = input.read() * 16
-                                if (metaLength > 0) {
-                                    val metaBuffer = ByteArray(metaLength)
-                                    var metaRead = 0
-                                    while (metaRead < metaLength) {
-                                        val r = input.read(metaBuffer, metaRead, metaLength - metaRead)
-                                        if (r == -1) break
-                                        metaRead += r
-                                    }
-                                    val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(String(metaBuffer, Charsets.UTF_8))
-                                    if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
-                                }
-                            }
-                            socket.close() // Быстро закрываем, чтобы не прерывать основной аудиопоток
-                        } catch (e: Exception) {}
-                    }
-
-                    if (title.isNotEmpty()) updateSongInfo(title)
-                } catch (e: Exception) {}
+                if (title.isNotEmpty()) updateSongInfo(title)
             }
         }, 3000, 15000)
     }
@@ -699,13 +695,11 @@ class MainActivity : AppCompatActivity() {
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
-            // Убираем слово "Загрузка...", как только плеер начал играть
+            // Если звук пошел - убираем "Загрузка..."
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) {
-                    if (currentSongMetadata.isEmpty()) {
-                        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-                        runOnUiThread { stationNameText.text = stName }
-                    }
+                if (playbackState == Player.STATE_READY && currentSongMetadata.isEmpty()) {
+                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                    runOnUiThread { stationNameText.text = stName }
                 }
             }
 
@@ -730,7 +724,6 @@ class MainActivity : AppCompatActivity() {
         
         val station = currentPlaylist[index]
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
-        stationNameText.announceForAccessibility((if(isTr) "Oynatılıyor: " else "Включаю: ") + station.name)
 
         val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
         val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
@@ -746,7 +739,6 @@ class MainActivity : AppCompatActivity() {
         if (player?.isPlaying == true) player?.pause() else player?.play()
     }
 
-    // Ручное переключение для гарнитуры и кнопок
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
         val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
