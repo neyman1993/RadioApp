@@ -69,7 +69,10 @@ class MainActivity : AppCompatActivity() {
             when (intent?.action) {
                 "com.neyman.radio.READY" -> {
                     val name = intent.getStringExtra("name") ?: ""
-                    if (name.isNotEmpty()) stationNameText.text = name
+                    if (name.isNotEmpty()) {
+                        stationNameText.text = name
+                        btnPlayPause.text = getStr("Пауза", "Duraklat")
+                    }
                 }
                 "com.neyman.radio.METADATA" -> {
                     val title = intent.getStringExtra("title") ?: ""
@@ -82,6 +85,7 @@ class MainActivity : AppCompatActivity() {
                 "com.neyman.radio.ERROR" -> {
                     val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
+                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
                 }
                 "com.neyman.radio.NEXT" -> playNext()

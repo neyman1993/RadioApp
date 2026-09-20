@@ -68,7 +68,6 @@ class PlaybackService : Service() {
                 currentStationName = intent.getStringExtra("name") ?: ""
                 currentSongTitle = ""
                 
-                // КРИТИЧНО: Сразу запускаем Foreground, чтобы Android не убил службу и кнопки не висли
                 updateSessionState(PlaybackStateCompat.STATE_BUFFERING)
                 showNotification(PlaybackStateCompat.STATE_BUFFERING, getStr("Загрузка...", "Yükleniyor..."))
                 
@@ -104,6 +103,7 @@ class PlaybackService : Service() {
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
             
+            // Уведомляем MainActivity, что трансляция пошла и имя станции актуально
             val readyIntent = Intent("com.neyman.radio.READY")
             readyIntent.putExtra("name", currentStationName)
             sendBroadcast(readyIntent)
@@ -135,7 +135,7 @@ class PlaybackService : Service() {
         metadataTimer = Timer()
         metadataTimer?.schedule(object : TimerTask() {
             override fun run() { pollMetadata() }
-        }, 1000, 10000) // Каждые 10 секунд
+        }, 1000, 10000)
     }
 
     private fun pollMetadata() {
@@ -143,14 +143,12 @@ class PlaybackService : Service() {
         
         var newTitle = ""
         
-        // 1. Пытаемся взять стандартные теги BASS (работает для MP3)
         val meta = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_META) as? String
         if (meta != null) {
             val matcher = Pattern.compile("StreamTitle='([^']*)';").matcher(meta)
             if (matcher.find()) newTitle = matcher.group(1)?.trim() ?: ""
         }
 
-        // 2. Официальное API Triton Digital для StreamTheWorld (JoyTurk, Mydonose - AAC потоки)
         if (newTitle.isEmpty() && currentUrl.contains("streamtheworld.com")) {
             try {
                 val path = URL(currentUrl).path
@@ -173,7 +171,6 @@ class PlaybackService : Service() {
             } catch(e: Exception) {}
         }
 
-        // 3. Резервный JSON (для остальных)
         if (newTitle.isEmpty()) {
             try {
                 val parsedUrl = URL(currentUrl)
@@ -236,6 +233,7 @@ class PlaybackService : Service() {
         val nextIntent = Intent(this, PlaybackService::class.java).apply { action = "NEXT" } 
         val nextPending = PendingIntent.getService(this, 3, nextIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+        // Кнопка закрытия (крестик) для шторки
         val closeIntent = Intent(this, PlaybackService::class.java).apply { action = "STOP_SERVICE" }
         val closePending = PendingIntent.getService(this, 4, closeIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
@@ -249,7 +247,7 @@ class PlaybackService : Service() {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", closePending)
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setMediaSession(mediaSession.sessionToken)
-                .setShowActionsInCompactView(0, 1, 2))
+                .setShowActionsInCompactView(0, 1, 2)) // Показываем Prev, Play/Pause, Next в свернутой шторке
             .setOngoing(isPlaying || isBuffering)
             .build()
 
