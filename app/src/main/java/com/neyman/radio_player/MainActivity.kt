@@ -76,7 +76,7 @@ class MainActivity : AppCompatActivity() {
     private var recordThread: Thread? = null
     
     private var metadataTimer: Timer? = null
-    private var currentStreamUrlForMetadata = "" // ВОТ ЭТА ПЕРЕМЕННАЯ БЫЛА УПУЩЕНА
+    private var currentStreamUrlForMetadata = ""
 
     // Прием команд от гарнитуры
     private val playerActionReceiver = object : BroadcastReceiver() {
@@ -214,36 +214,45 @@ class MainActivity : AppCompatActivity() {
 
         listView = ListView(this)
         
+        // ИСПРАВЛЕНИЕ: Список стран больше не ломается! 
+        // Меню TalkBack применяется только к станциям.
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
-                ViewCompat.setAccessibilityDelegate(view, object : AccessibilityDelegateCompat() {
-                    override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
-                        super.onInitializeAccessibilityNodeInfo(host, info)
-                        val list = if (currentMode == "FAVORITES") favorites else stations
-                        if (position >= list.size) return
-                        val station = list[position]
-                        val isFav = favorites.any { it.url == station.url }
-                        
-                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(101, if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle")))
-                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(102, getStr("Скопировать название песни", "Şarkı adını kopyala")))
-                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(103, getStr("Информация", "Bilgi")))
-                        info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(104, getStr("Поделиться", "Paylaş")))
-                    }
+                
+                // Всегда сначала сбрасываем старый делегат
+                ViewCompat.setAccessibilityDelegate(view, null)
 
-                    override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
-                        val list = if (currentMode == "FAVORITES") favorites else stations
-                        if (position >= list.size) return false
-                        val station = list[position]
-                        when (action) {
-                            101 -> { toggleFavorite(station); return true }
-                            102 -> { copySongMetadata(station); return true }
-                            103 -> { showStationInfo(station); return true }
-                            104 -> { shareStation(station); return true }
+                // Если это список стран - меню станций не применяем!
+                if (currentMode == "COUNTRIES") return view
+
+                val list = if (currentMode == "FAVORITES") favorites else stations
+                if (position < list.size) {
+                    ViewCompat.setAccessibilityDelegate(view, object : AccessibilityDelegateCompat() {
+                        override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
+                            super.onInitializeAccessibilityNodeInfo(host, info)
+                            val station = list[position]
+                            val isFav = favorites.any { it.url == station.url }
+                            
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(101, if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle")))
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(102, getStr("Скопировать название песни", "Şarkı adını kopyala")))
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(103, getStr("Информация", "Bilgi")))
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(104, getStr("Поделиться", "Paylaş")))
                         }
-                        return super.performAccessibilityAction(host, action, args)
-                    }
-                })
+
+                        override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
+                            if (position >= list.size) return false
+                            val station = list[position]
+                            when (action) {
+                                101 -> { toggleFavorite(station); return true }
+                                102 -> { copySongMetadata(station); return true }
+                                103 -> { showStationInfo(station); return true }
+                                104 -> { shareStation(station); return true }
+                            }
+                            return super.performAccessibilityAction(host, action, args)
+                        }
+                    })
+                }
                 return view
             }
         }
@@ -266,7 +275,10 @@ class MainActivity : AppCompatActivity() {
         
         val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); setOnClickListener { playPrev() } }
+        
+        // ИСПРАВЛЕНИЕ: Кнопка Воспроизвести / Oynat
         btnPlayPause = Button(this).apply { text = getStr("Воспроизвести", "Oynat"); setOnClickListener { togglePlayPause() } }
+        
         val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); setOnClickListener { playNext() } }
         
         controlsLayout.addView(btnPrevBtn); controlsLayout.addView(btnPlayPause); controlsLayout.addView(btnNextBtn)
@@ -283,11 +295,11 @@ class MainActivity : AppCompatActivity() {
         btnSearchTab.setOnClickListener { showSearchDialog() }
         btnCountriesTab.setOnClickListener { 
             currentMode = "COUNTRIES"; updateUIForMode()
-            if (countries.isEmpty()) loadCountries() else { updateList(countries); stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
+            if (countries.isEmpty()) loadCountries() else { updateList(countries); listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
         btnFavTab.setOnClickListener { 
             currentMode = "FAVORITES"; updateUIForMode()
-            updateList(favorites.map { it.name }); stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
+            updateList(favorites.map { it.name }); listView.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
 
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -311,6 +323,7 @@ class MainActivity : AppCompatActivity() {
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
+                // ИСПРАВЛЕНИЕ: Заголовок всегда Radio Player
                 supportActionBar?.title = "Radio Player"
             }
             "SEARCH_RESULTS" -> { 
@@ -497,11 +510,18 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
+    // ИСПРАВЛЕНИЕ: Блокировка дублирования названия радиостанции
     private fun updateSongInfo(title: String) {
         val cleanTitle = title.trim()
-        if (cleanTitle.isNotEmpty() && cleanTitle != currentSongMetadata && cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
+        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+        
+        // Если пришло название самой станции - игнорируем! (Решает проблему с JoyTurk Akustik)
+        if (cleanTitle.isNotEmpty() && 
+            cleanTitle.lowercase() != stName.lowercase() && 
+            cleanTitle != currentSongMetadata && 
+            cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
+            
             currentSongMetadata = cleanTitle
-            val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
             runOnUiThread {
                 stationNameText.text = "$stName\n$cleanTitle"
             }
@@ -589,6 +609,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
+    // ИСПРАВЛЕНИЕ: Идеальный парсер, скопированный с твоего Python: _try_direct_stream
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -603,28 +624,31 @@ class MainActivity : AppCompatActivity() {
                     val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
                     val protocol = parsedUrl.protocol
 
+                    // 1. _try_shoutcast_v2
                     try {
                         val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
-                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                        conn.connectTimeout = 3000; conn.readTimeout = 3000
+                        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                        conn.connectTimeout = 4000; conn.readTimeout = 4000
                         val matcher = Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
                         if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
                     } catch(e: Exception){}
 
+                    // 2. _try_shoutcast_v1
                     if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                            conn.connectTimeout = 3000; conn.readTimeout = 3000
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                            conn.connectTimeout = 4000; conn.readTimeout = 4000
                             title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
                         } catch(e: Exception){}
                     }
 
+                    // 3. _try_icecast
                     if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                            conn.connectTimeout = 3000; conn.readTimeout = 3000
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                            conn.connectTimeout = 4000; conn.readTimeout = 4000
                             val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
                             if (source is JSONArray && source.length() > 0) {
                                 title = source.getJSONObject(0).optString("title", "")
@@ -634,6 +658,7 @@ class MainActivity : AppCompatActivity() {
                         } catch (e: Exception) {}
                     }
 
+                    // 4. _try_direct_stream (Точная копия твоего Python: Читаем байты как ISO_8859_1 чтобы не сломать регулярку!)
                     if (title.isEmpty()) {
                         try {
                             val isHttps = protocol == "https"
@@ -642,32 +667,41 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 java.net.Socket(host, port)
                             }
-                            socket.soTimeout = 4000
+                            socket.soTimeout = 5000
                             
-                            val out = PrintWriter(OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true)
+                            val out = socket.getOutputStream()
                             val path = if (parsedUrl.file.isEmpty()) "/" else parsedUrl.file
+                            val authority = parsedUrl.authority ?: host
                             
-                            out.print("GET $path HTTP/1.0\r\n")
-                            out.print("Host: $host\r\n")
-                            out.print("Icy-MetaData: 1\r\n")
-                            out.print("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n")
-                            out.print("Accept: */*\r\n")
-                            out.print("Connection: close\r\n\r\n")
+                            val request = "GET $path HTTP/1.0\r\n" +
+                                          "Host: $authority\r\n" +
+                                          "Icy-MetaData: 1\r\n" +
+                                          "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n" +
+                                          "Accept: */*\r\n" +
+                                          "Connection: close\r\n\r\n"
+                            out.write(request.toByteArray(Charsets.UTF_8))
                             out.flush()
                             
-                            val inputStream = socket.getInputStream()
-                            val buffer = ByteArray(8192)
+                            val input = socket.getInputStream()
+                            val buffer = ByteArray(8192) // Как в Python (recv 8192)
                             var readTotal = 0
                             while (readTotal < 8192) {
-                                val r = inputStream.read(buffer, readTotal, 8192 - readTotal)
+                                val r = input.read(buffer, readTotal, 8192 - readTotal)
                                 if (r == -1) break
                                 readTotal += r
                             }
                             socket.close()
                             
-                            val rawData = String(buffer, 0, readTotal, Charsets.UTF_8)
-                            val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(rawData)
-                            if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
+                            // Читаем сырые байты без повреждения (Эквивалент Python b"StreamTitle='...'")
+                            val rawData = String(buffer, 0, readTotal, Charsets.ISO_8859_1)
+                            if (rawData.contains("ICY", ignoreCase = true) || rawData.contains("icy-metaint", ignoreCase = true)) {
+                                val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(rawData)
+                                if (matcher.find()) {
+                                    val extracted = matcher.group(1) ?: ""
+                                    // Конвертируем обратно в нормальный UTF-8 (Эквивалент Python .decode('utf-8'))
+                                    title = String(extracted.toByteArray(Charsets.ISO_8859_1), Charsets.UTF_8).trim()
+                                }
+                            }
                         } catch (e: Exception) {}
                     }
 
@@ -683,10 +717,13 @@ class MainActivity : AppCompatActivity() {
                 btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat") 
             }
             
+            // Как только радио заиграло - убираем надпись "Загрузка..."
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY && currentSongMetadata.isEmpty()) {
-                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-                    runOnUiThread { stationNameText.text = stName }
+                if (playbackState == Player.STATE_READY) {
+                    if (currentSongMetadata.isEmpty()) {
+                        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                        runOnUiThread { stationNameText.text = stName }
+                    }
                 }
             }
 
@@ -781,7 +818,7 @@ class MainActivity : AppCompatActivity() {
                 stations.sortBy { it.name.lowercase(Locale.getDefault()) }
                 runOnUiThread { 
                     updateList(stations.map { it.name }) 
-                    stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
+                    listView.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
                 }
             } catch (e: Exception) {}
         }
@@ -797,7 +834,7 @@ class MainActivity : AppCompatActivity() {
                 countries.sort(); 
                 runOnUiThread { 
                     updateList(countries) 
-                    stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
+                    listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
                 }
             } catch (e: Exception) {}
         }
