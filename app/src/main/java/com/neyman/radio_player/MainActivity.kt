@@ -9,7 +9,6 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.*
 import android.provider.DocumentsContract
-import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.Menu
@@ -65,13 +64,12 @@ class MainActivity : AppCompatActivity() {
     private var isRecording = false
     private var recordThread: Thread? = null
 
-    // Перехватываем сигналы от BASS-плеера
     private val playbackReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 "com.neyman.radio.READY" -> {
-                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-                    stationNameText.text = stName
+                    val name = intent.getStringExtra("name") ?: ""
+                    if (name.isNotEmpty()) stationNameText.text = name
                 }
                 "com.neyman.radio.METADATA" -> {
                     val title = intent.getStringExtra("title") ?: ""

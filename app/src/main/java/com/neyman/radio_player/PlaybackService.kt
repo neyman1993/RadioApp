@@ -13,6 +13,11 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import com.un4seen.bass.BASS
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Timer
+import java.util.TimerTask
 import java.util.regex.Pattern
 
 class PlaybackService : Service() {
@@ -21,25 +26,18 @@ class PlaybackService : Service() {
     private lateinit var mediaSession: MediaSessionCompat
     private var currentUrl: String = ""
     private var currentStationName: String = ""
+    private var currentSongTitle: String = ""
     private var isTr = false
-
-    // Обработчик метаданных, который BASS дергает автоматически при смене песни в потоке
-    private val syncProc = BASS.SYNCPROC { _, channel, _, _ ->
-        updateMetadataFromBass(channel)
-    }
+    private var metadataTimer: Timer? = null
 
     override fun onCreate() {
         super.onCreate()
         val locale = resources.configuration.locales.get(0).language
         isTr = locale == "tr"
 
-        // Инициализируем BASS как в Python: (device = -1, freq = 44100, flags = 0)
         BASS.BASS_Init(-1, 44100, 0)
+        BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
-        // Маскируемся под браузер, чтобы StreamTheWorld не блокировал нас
-        BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-
-        // Пытаемся подгрузить плагин HLS для m3u8 (не страшно, если его нет)
         try {
             val hlsPath = applicationInfo.nativeLibraryDir + "/libbasshls.so"
             BASS.BASS_PluginLoad(hlsPath, 0)
@@ -47,6 +45,8 @@ class PlaybackService : Service() {
 
         setupMediaSession()
     }
+
+    private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
     private fun setupMediaSession() {
         mediaSession = MediaSessionCompat(this, "RadioSession").apply {
@@ -66,6 +66,12 @@ class PlaybackService : Service() {
             "PLAY_STATION" -> {
                 currentUrl = intent.getStringExtra("url") ?: ""
                 currentStationName = intent.getStringExtra("name") ?: ""
+                currentSongTitle = ""
+                
+                // КРИТИЧНО: Сразу запускаем Foreground, чтобы Android не убил службу и кнопки не висли
+                updateSessionState(PlaybackStateCompat.STATE_BUFFERING)
+                showNotification(PlaybackStateCompat.STATE_BUFFERING, getStr("Загрузка...", "Yükleniyor..."))
+                
                 startBassPlayback()
             }
             "TOGGLE" -> togglePlayback()
@@ -75,18 +81,17 @@ class PlaybackService : Service() {
     }
 
     private fun startBassPlayback() {
-        // Запуск сети делаем в фоне, чтобы не заморозить интерфейс
+        metadataTimer?.cancel()
+
         Thread {
             if (streamHandle != 0) {
                 BASS.BASS_StreamFree(streamHandle)
             }
 
-            // Настройка буфера
             val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            // Создаем поток с автоочисткой
             streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
             
             if (streamHandle == 0) {
@@ -94,17 +99,18 @@ class PlaybackService : Service() {
                 return@Thread
             }
 
-            // Вешаем крючок на получение метаданных (Icy Meta)
-            BASS.BASS_ChannelSetSync(streamHandle, BASS.BASS_SYNC_META, 0, syncProc, null)
             BASS.BASS_ChannelPlay(streamHandle, false)
 
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
-            showNotification(PlaybackStateCompat.STATE_PLAYING, "Radyo Yayını")
-            sendActionToActivity("com.neyman.radio.READY")
+            showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
+            
+            val readyIntent = Intent("com.neyman.radio.READY")
+            readyIntent.putExtra("name", currentStationName)
+            sendBroadcast(readyIntent)
+            
             sendStateToActivity(true)
 
-            // Пробуем сразу достать название
-            updateMetadataFromBass(streamHandle)
+            startMetadataTimer()
         }.start()
     }
 
@@ -115,40 +121,75 @@ class PlaybackService : Service() {
         if (activeStatus == BASS.BASS_ACTIVE_PLAYING) {
             BASS.BASS_ChannelPause(streamHandle)
             updateSessionState(PlaybackStateCompat.STATE_PAUSED)
-            showNotification(PlaybackStateCompat.STATE_PAUSED, currentStationName)
+            showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
             sendStateToActivity(false)
         } else {
             BASS.BASS_ChannelPlay(streamHandle, false)
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
-            showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
+            showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
             sendStateToActivity(true)
         }
     }
 
-    private fun updateMetadataFromBass(channel: Int) {
-        var newTitle = ""
+    private fun startMetadataTimer() {
+        metadataTimer = Timer()
+        metadataTimer?.schedule(object : TimerTask() {
+            override fun run() { pollMetadata() }
+        }, 1000, 10000) // Каждые 10 секунд
+    }
 
-        // Читаем стандартные ICY метаданные (JoyTurk, Mydonose и т.д.)
-        val meta = BASS.BASS_ChannelGetTags(channel, BASS.BASS_TAG_META) as? String
+    private fun pollMetadata() {
+        if (streamHandle == 0 || BASS.BASS_ChannelIsActive(streamHandle) != BASS.BASS_ACTIVE_PLAYING) return
+        
+        var newTitle = ""
+        
+        // 1. Пытаемся взять стандартные теги BASS (работает для MP3)
+        val meta = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_META) as? String
         if (meta != null) {
             val matcher = Pattern.compile("StreamTitle='([^']*)';").matcher(meta)
-            if (matcher.find()) {
-                newTitle = matcher.group(1)?.trim() ?: ""
-            }
-        } else {
-            // Резерв: некоторые серверы Icecast отдают данные в формате OGG тегов
-            val oggMeta = BASS.BASS_ChannelGetTags(channel, BASS.BASS_TAG_OGG) as? Array<String>
-            if (oggMeta != null) {
-                for (tag in oggMeta) {
-                    if (tag.lowercase().startsWith("title=")) {
-                        newTitle = tag.substring(6).trim()
-                        break
-                    }
-                }
-            }
+            if (matcher.find()) newTitle = matcher.group(1)?.trim() ?: ""
         }
 
-        if (newTitle.isNotEmpty()) {
+        // 2. Официальное API Triton Digital для StreamTheWorld (JoyTurk, Mydonose - AAC потоки)
+        if (newTitle.isEmpty() && currentUrl.contains("streamtheworld.com")) {
+            try {
+                val path = URL(currentUrl).path
+                var mountName = path.substringAfterLast("/").substringBefore(".")
+                if (mountName.endsWith("_SC")) mountName = mountName.removeSuffix("_SC")
+                
+                val apiUrl = "https://np.tritondigital.com/public/nowplaying?mountName=$mountName&numberToFetch=1"
+                val conn = URL(apiUrl).openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                val xml = conn.inputStream.bufferedReader().readText()
+                
+                val titleMatcher = Pattern.compile("<property name=\"cue_title\">([^<]*)</property>").matcher(xml)
+                if (titleMatcher.find()) {
+                    val parsedTitle = titleMatcher.group(1)?.trim() ?: ""
+                    if (parsedTitle.isNotEmpty() && !parsedTitle.contains("STW_AD") && !parsedTitle.contains("ADVERTISEMENT")) {
+                        newTitle = parsedTitle
+                    }
+                }
+            } catch(e: Exception) {}
+        }
+
+        // 3. Резервный JSON (для остальных)
+        if (newTitle.isEmpty()) {
+            try {
+                val parsedUrl = URL(currentUrl)
+                val host = parsedUrl.host
+                val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
+                val conn = URL("${parsedUrl.protocol}://$host:$port/stats?json=1").openConnection() as HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                val json = JSONObject(conn.inputStream.bufferedReader().readText())
+                newTitle = json.optString("songtitle", "")
+            } catch(e: Exception) {}
+        }
+
+        if (newTitle.isNotEmpty() && !newTitle.equals(currentStationName, ignoreCase = true) && newTitle != currentSongTitle) {
+            currentSongTitle = newTitle
+            
             val intent = Intent("com.neyman.radio.METADATA")
             intent.putExtra("title", newTitle)
             sendBroadcast(intent)
@@ -172,7 +213,7 @@ class PlaybackService : Service() {
         mediaSession.setPlaybackState(playbackState)
     }
 
-    private fun showNotification(state: Int, songTitle: String) {
+    private fun showNotification(state: Int, textToDisplay: String) {
         val channelId = "radio_playback_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(channelId, "Radio Playback", NotificationManager.IMPORTANCE_LOW)
@@ -181,16 +222,18 @@ class PlaybackService : Service() {
         }
 
         val isPlaying = state == PlaybackStateCompat.STATE_PLAYING
-        val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-        val playPauseActionName = if (isPlaying) "Pause" else "Play"
+        val isBuffering = state == PlaybackStateCompat.STATE_BUFFERING
+        
+        val playPauseIcon = if (isPlaying || isBuffering) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        val playPauseActionName = if (isPlaying || isBuffering) "Pause" else "Play"
 
         val playPauseIntent = Intent(this, PlaybackService::class.java).apply { action = "TOGGLE" }
         val playPausePending = PendingIntent.getService(this, 1, playPauseIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val prevIntent = Intent(this, PlaybackService::class.java).apply { action = "PREV" } // Это перехватится через сессию
+        val prevIntent = Intent(this, PlaybackService::class.java).apply { action = "PREV" } 
         val prevPending = PendingIntent.getService(this, 2, prevIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val nextIntent = Intent(this, PlaybackService::class.java).apply { action = "NEXT" } // Это перехватится через сессию
+        val nextIntent = Intent(this, PlaybackService::class.java).apply { action = "NEXT" } 
         val nextPending = PendingIntent.getService(this, 3, nextIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         val closeIntent = Intent(this, PlaybackService::class.java).apply { action = "STOP_SERVICE" }
@@ -199,7 +242,7 @@ class PlaybackService : Service() {
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(currentStationName)
-            .setContentText(songTitle)
+            .setContentText(textToDisplay)
             .addAction(android.R.drawable.ic_media_previous, "Prev", prevPending)
             .addAction(playPauseIcon, playPauseActionName, playPausePending)
             .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
@@ -207,7 +250,7 @@ class PlaybackService : Service() {
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setMediaSession(mediaSession.sessionToken)
                 .setShowActionsInCompactView(0, 1, 2))
-            .setOngoing(isPlaying)
+            .setOngoing(isPlaying || isBuffering)
             .build()
 
         startForeground(1001, notification)
@@ -229,6 +272,7 @@ class PlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        metadataTimer?.cancel()
         if (streamHandle != 0) {
             BASS.BASS_StreamFree(streamHandle)
         }
