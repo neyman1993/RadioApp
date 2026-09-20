@@ -39,7 +39,6 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.regex.Pattern
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -76,9 +75,8 @@ class MainActivity : AppCompatActivity() {
     private var recordThread: Thread? = null
     
     private var metadataTimer: Timer? = null
-    private var currentStreamUrlForMetadata = ""
 
-    // Прием команд от кнопок гарнитуры
+    // Перехват сигналов от гарнитуры
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -214,7 +212,6 @@ class MainActivity : AppCompatActivity() {
 
         listView = ListView(this)
         
-        // ЖЕСТЫ TALKBACK: Вверх/вниз вызывает эти действия
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
@@ -284,11 +281,11 @@ class MainActivity : AppCompatActivity() {
         btnSearchTab.setOnClickListener { showSearchDialog() }
         btnCountriesTab.setOnClickListener { 
             currentMode = "COUNTRIES"; updateUIForMode()
-            if (countries.isEmpty()) loadCountries() else { updateList(countries); stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
+            if (countries.isEmpty()) loadCountries() else { updateList(countries); listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
         btnFavTab.setOnClickListener { 
             currentMode = "FAVORITES"; updateUIForMode()
-            updateList(favorites.map { it.name }); stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
+            updateList(favorites.map { it.name }); listView.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
 
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -464,12 +461,11 @@ class MainActivity : AppCompatActivity() {
         val station = currentPlaylist[currentStationIndex]
         val isFav = favorites.any { it.url == station.url }
         
-        // Настройки убраны
         val options = arrayOf(
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
             if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet"),
-            if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")
+            if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı Мета Ит") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")
         )
         AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, w ->
             when (w) { 
@@ -506,7 +502,6 @@ class MainActivity : AppCompatActivity() {
             val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
             runOnUiThread {
                 stationNameText.text = "$stName\n$cleanTitle"
-                // Теперь TalkBack не озвучивает каждое изменение автоматически, только по фокусу
             }
         }
     }
@@ -592,101 +587,70 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // НАСТОЯЩИЙ SOCKET-ПАРСЕР ДЛЯ МЕТАДАННЫХ БЕЗ ЗАИКАНИЙ (Копия логики Python)
-    private fun getIcyMetadataRawSocket(urlStr: String): String {
-        var title = ""
-        try {
-            val url = URL(urlStr)
-            val host = url.host
-            val port = if (url.port != -1) url.port else url.defaultPort
-            val isHttps = url.protocol == "https"
-            
-            val socket = if (isHttps) {
-                javax.net.ssl.SSLSocketFactory.getDefault().createSocket(host, port)
-            } else {
-                java.net.Socket(host, port)
-            }
-            socket.soTimeout = 4000
-            
-            val out = PrintWriter(OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true)
-            val path = if (url.file.isEmpty()) "/" else url.file
-            
-            // Запрос HTTP/1.0 исключает Chunked Encoding
-            out.print("GET $path HTTP/1.0\r\n")
-            out.print("Host: $host\r\n")
-            out.print("Icy-MetaData: 1\r\n")
-            out.print("User-Agent: Mozilla/5.0\r\n")
-            out.print("Accept: */*\r\n")
-            out.print("Connection: close\r\n\r\n")
-            out.flush()
-            
-            val inputStream = socket.getInputStream()
-            val reader = BufferedReader(InputStreamReader(inputStream, "UTF-8"))
-            var metaint = 0
-            
-            while (true) {
-                val line = reader.readLine()
-                if (line.isNullOrEmpty()) break
-                if (line.lowercase().startsWith("icy-metaint:")) {
-                    metaint = line.substringAfter(":").trim().toIntOrNull() ?: 0
-                }
-            }
-            
-            if (metaint > 0) {
-                var bytesRead = 0
-                val skipBuffer = ByteArray(4096)
-                while (bytesRead < metaint) {
-                    val toRead = kotlin.math.min(4096, metaint - bytesRead)
-                    val r = inputStream.read(skipBuffer, 0, toRead)
-                    if (r == -1) break
-                    bytesRead += r
-                }
-                
-                val metaLenByte = inputStream.read()
-                if (metaLenByte > 0) {
-                    val metaLength = metaLenByte * 16
-                    val metaBuffer = ByteArray(metaLength)
-                    var metaRead = 0
-                    while (metaRead < metaLength) {
-                        val r = inputStream.read(metaBuffer, metaRead, metaLength - metaRead)
-                        if (r == -1) break
-                        metaRead += r
-                    }
-                    val metaStr = String(metaBuffer, Charsets.UTF_8)
-                    val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(metaStr)
-                    if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
-                }
-            }
-            socket.close()
-        } catch (e: Exception) {}
-        return title
-    }
-
+    // НОВОЕ: Настоящий парсер API Triton (для StreamTheWorld) и Icecast/Shoutcast
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
-        currentStreamUrlForMetadata = urlStr
         
         metadataTimer = Timer()
         metadataTimer?.schedule(object : TimerTask() {
             override fun run() {
-                var title = getIcyMetadataRawSocket(urlStr)
+                var title = ""
+                try {
+                    val parsedUrl = URL(urlStr)
+                    val host = parsedUrl.host.lowercase()
+                    val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
+                    val protocol = parsedUrl.protocol
 
-                if (title.isEmpty()) {
-                    try {
-                        val parsedUrl = URL(urlStr)
-                        val host = parsedUrl.host
-                        val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
-                        val protocol = parsedUrl.protocol
+                    // 1. Если это StreamTheWorld (Mydonose / JoyTurk)
+                    if (host.contains("streamtheworld.com")) {
+                        try {
+                            val mount = urlStr.substringAfterLast("/").substringBefore(".").substringBefore("?")
+                            if (mount.isNotEmpty()) {
+                                val tritonUrl = "https://np.tritondigital.com/public/nowplaying?mountName=$mount"
+                                val conn = URL(tritonUrl).openConnection() as HttpURLConnection
+                                conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                                conn.connectTimeout = 3000; conn.readTimeout = 3000
+                                val xml = conn.inputStream.bufferedReader().readText()
+                                
+                                val cueTitleStart = xml.indexOf("name=\"cue_title\"")
+                                if (cueTitleStart != -1) {
+                                    val valStart = xml.indexOf(">", cueTitleStart) + 1
+                                    val valEnd = xml.indexOf("</property>", valStart)
+                                    if (valStart > 0 && valEnd > valStart) {
+                                        var text = xml.substring(valStart, valEnd).trim()
+                                        if (text.startsWith("<![CDATA[")) text = text.removePrefix("<![CDATA[")
+                                        if (text.endsWith("]]>")) text = text.removeSuffix("]]>")
+                                        title = text.trim()
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {}
+                    }
 
+                    // 2. Icecast API
+                    if (title.isEmpty()) {
+                        try {
+                            val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                            conn.connectTimeout = 2000; conn.readTimeout = 2000
+                            val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
+                            if (source is JSONArray && source.length() > 0) title = source.getJSONObject(0).optString("title", "")
+                            else if (source is JSONObject) title = source.optString("title", "")
+                        } catch (e: Exception) {}
+                    }
+
+                    // 3. Shoutcast JSON
+                    if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
                             conn.connectTimeout = 2000; conn.readTimeout = 2000
                             title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
                         } catch(e: Exception){}
-                    } catch(e: Exception){}
-                }
+                    }
 
-                if (title.isNotEmpty()) updateSongInfo(title)
+                    if (title.isNotEmpty()) updateSongInfo(title)
+                } catch (e: Exception) {}
             }
         }, 3000, 15000)
     }
@@ -695,14 +659,35 @@ class MainActivity : AppCompatActivity() {
         player?.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
             
-            // Если звук пошел - убираем "Загрузка..."
+            // НОВОЕ: Как только заиграло аудио — убираем слово "Загрузка..."
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY && currentSongMetadata.isEmpty()) {
-                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-                    runOnUiThread { stationNameText.text = stName }
+                if (playbackState == Player.STATE_READY) {
+                    if (currentSongMetadata.isEmpty()) {
+                        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                        runOnUiThread { stationNameText.text = stName }
+                    }
                 }
             }
 
+            override fun onMetadata(metadata: androidx.media3.common.Metadata) {
+                for (i in 0 until metadata.length()) {
+                    val entry = metadata.get(i)
+                    if (entry is androidx.media3.extractor.metadata.icy.IcyInfo) {
+                        entry.title?.let { updateSongInfo(it) }
+                    } else if (entry is androidx.media3.extractor.metadata.id3.TextInformationFrame) {
+                        if (entry.id == "TIT2" || entry.id == "TT2") updateSongInfo(entry.value)
+                    }
+                }
+            }
+
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                val title = mediaMetadata.title?.toString() ?: ""
+                val displayTitle = mediaMetadata.displayTitle?.toString() ?: ""
+                val artist = mediaMetadata.artist?.toString() ?: ""
+                val info = listOf(title, displayTitle, artist).firstOrNull { it.isNotEmpty() && it != "Радио" && it != "Radyo" && it.lowercase() != "unknown" } ?: ""
+                if (info.isNotEmpty()) updateSongInfo(info)
+            }
+            
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                 stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
@@ -724,7 +709,7 @@ class MainActivity : AppCompatActivity() {
         
         val station = currentPlaylist[index]
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
-
+        
         val meta = MediaMetadata.Builder().setTitle(station.name).setArtist(if(isTr) "Radyo Yayını" else "Радио эфир").build()
         val mediaItem = MediaItem.Builder().setMediaId(station.url).setUri(station.url).setMediaMetadata(meta).build()
         
@@ -775,7 +760,7 @@ class MainActivity : AppCompatActivity() {
                 stations.sortBy { it.name.lowercase(Locale.getDefault()) }
                 runOnUiThread { 
                     updateList(stations.map { it.name }) 
-                    stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
+                    listView.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
                 }
             } catch (e: Exception) {}
         }
@@ -791,7 +776,7 @@ class MainActivity : AppCompatActivity() {
                 countries.sort(); 
                 runOnUiThread { 
                     updateList(countries) 
-                    stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
+                    listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
                 }
             } catch (e: Exception) {}
         }

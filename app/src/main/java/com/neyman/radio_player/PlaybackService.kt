@@ -37,7 +37,9 @@ class PlaybackService : MediaSessionService() {
                 bufferSec * 1000
             ).build()
 
+        // Ставим User-Agent от ПК, чтобы серверы не блокировали метаданные
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
@@ -51,7 +53,7 @@ class PlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
 
-        // ПЕРЕХВАТЧИК ГАРНИТУРЫ: Жестко говорим системе, что кнопки Вперед/Назад всегда активны
+        // ПЕРЕХВАТЧИК: Обманываем систему, делаем кнопки гарнитуры всегда активными
         val forwardingPlayer = object : ForwardingPlayer(player) {
             override fun hasNextMediaItem() = true
             override fun hasPreviousMediaItem() = true
@@ -71,7 +73,6 @@ class PlaybackService : MediaSessionService() {
             }
         }
         
-        // Кнопка "Закрыть" в шторке
         val stopButton = CommandButton.Builder()
             .setDisplayName("Закрыть")
             .setIconResId(android.R.drawable.ic_menu_close_clear_cancel)
