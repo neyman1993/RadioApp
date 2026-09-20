@@ -39,6 +39,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.regex.Pattern
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -76,7 +77,7 @@ class MainActivity : AppCompatActivity() {
     
     private var metadataTimer: Timer? = null
 
-    // Перехват сигналов от гарнитуры
+    // Прием команд от гарнитуры
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -264,7 +265,7 @@ class MainActivity : AppCompatActivity() {
         
         val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); setOnClickListener { playPrev() } }
-        btnPlayPause = Button(this).apply { text = getStr("Плей", "Oynat"); setOnClickListener { togglePlayPause() } }
+        btnPlayPause = Button(this).apply { text = getStr("Воспроизвести", "Oynat"); setOnClickListener { togglePlayPause() } }
         val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); setOnClickListener { playNext() } }
         
         controlsLayout.addView(btnPrevBtn); controlsLayout.addView(btnPlayPause); controlsLayout.addView(btnNextBtn)
@@ -309,7 +310,7 @@ class MainActivity : AppCompatActivity() {
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
-                supportActionBar?.title = getStr("Радио Плеер", "Radyo Çalar") 
+                supportActionBar?.title = "Radio Player"
             }
             "SEARCH_RESULTS" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
@@ -465,7 +466,7 @@ class MainActivity : AppCompatActivity() {
             getStr("Скопировать название песни", "Şarkı adını kopyala"),
             if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
             if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet"),
-            if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı Мета Ит") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")
+            if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")
         )
         AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, w ->
             when (w) { 
@@ -587,9 +588,10 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // НОВОЕ: Настоящий парсер API Triton (для StreamTheWorld) и Icecast/Shoutcast
+    // РЕАЛИЗАЦИЯ ИЗ ТВОЕГО ФАЙЛА radio_now_playing_2.py
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
+        currentStreamUrlForMetadata = urlStr
         
         metadataTimer = Timer()
         metadataTimer?.schedule(object : TimerTask() {
@@ -597,56 +599,80 @@ class MainActivity : AppCompatActivity() {
                 var title = ""
                 try {
                     val parsedUrl = URL(urlStr)
-                    val host = parsedUrl.host.lowercase()
+                    val host = parsedUrl.host
                     val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
                     val protocol = parsedUrl.protocol
 
-                    // 1. Если это StreamTheWorld (Mydonose / JoyTurk)
-                    if (host.contains("streamtheworld.com")) {
+                    // МЕТОД 1: _try_shoutcast_v2 (admin.cgi?mode=viewxml)
+                    try {
+                        val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
+                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        conn.connectTimeout = 3000; conn.readTimeout = 3000
+                        val matcher = Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
+                        if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
+                    } catch(e: Exception){}
+
+                    // МЕТОД 2: _try_shoutcast_v1 (stats?json=1)
+                    if (title.isEmpty()) {
                         try {
-                            val mount = urlStr.substringAfterLast("/").substringBefore(".").substringBefore("?")
-                            if (mount.isNotEmpty()) {
-                                val tritonUrl = "https://np.tritondigital.com/public/nowplaying?mountName=$mount"
-                                val conn = URL(tritonUrl).openConnection() as HttpURLConnection
-                                conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                                conn.connectTimeout = 3000; conn.readTimeout = 3000
-                                val xml = conn.inputStream.bufferedReader().readText()
-                                
-                                val cueTitleStart = xml.indexOf("name=\"cue_title\"")
-                                if (cueTitleStart != -1) {
-                                    val valStart = xml.indexOf(">", cueTitleStart) + 1
-                                    val valEnd = xml.indexOf("</property>", valStart)
-                                    if (valStart > 0 && valEnd > valStart) {
-                                        var text = xml.substring(valStart, valEnd).trim()
-                                        if (text.startsWith("<![CDATA[")) text = text.removePrefix("<![CDATA[")
-                                        if (text.endsWith("]]>")) text = text.removeSuffix("]]>")
-                                        title = text.trim()
-                                    }
-                                }
+                            val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            conn.connectTimeout = 3000; conn.readTimeout = 3000
+                            title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
+                        } catch(e: Exception){}
+                    }
+
+                    // МЕТОД 3: _try_icecast (status-json.xsl)
+                    if (title.isEmpty()) {
+                        try {
+                            val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            conn.connectTimeout = 3000; conn.readTimeout = 3000
+                            val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
+                            if (source is JSONArray && source.length() > 0) {
+                                title = source.getJSONObject(0).optString("title", "")
+                            } else if (source is JSONObject) {
+                                title = source.optString("title", "")
                             }
                         } catch (e: Exception) {}
                     }
 
-                    // 2. Icecast API
+                    // МЕТОД 4: _try_direct_stream (Сырые сокеты, как в Питоне)
                     if (title.isEmpty()) {
                         try {
-                            val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                            conn.connectTimeout = 2000; conn.readTimeout = 2000
-                            val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
-                            if (source is JSONArray && source.length() > 0) title = source.getJSONObject(0).optString("title", "")
-                            else if (source is JSONObject) title = source.optString("title", "")
+                            val isHttps = protocol == "https"
+                            val socket = if (isHttps) {
+                                javax.net.ssl.SSLSocketFactory.getDefault().createSocket(host, port)
+                            } else {
+                                java.net.Socket(host, port)
+                            }
+                            socket.soTimeout = 4000
+                            
+                            val out = PrintWriter(OutputStreamWriter(socket.getOutputStream(), "UTF-8"), true)
+                            val path = if (parsedUrl.file.isEmpty()) "/" else parsedUrl.file
+                            
+                            out.print("GET $path HTTP/1.0\r\n")
+                            out.print("Host: $host\r\n")
+                            out.print("Icy-MetaData: 1\r\n")
+                            out.print("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n")
+                            out.print("Accept: */*\r\n")
+                            out.print("Connection: close\r\n\r\n")
+                            out.flush()
+                            
+                            val inputStream = socket.getInputStream()
+                            val buffer = ByteArray(8192)
+                            var readTotal = 0
+                            while (readTotal < 8192) {
+                                val r = inputStream.read(buffer, readTotal, 8192 - readTotal)
+                                if (r == -1) break
+                                readTotal += r
+                            }
+                            socket.close()
+                            
+                            val rawData = String(buffer, 0, readTotal, Charsets.UTF_8)
+                            val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(rawData)
+                            if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
                         } catch (e: Exception) {}
-                    }
-
-                    // 3. Shoutcast JSON
-                    if (title.isEmpty()) {
-                        try {
-                            val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                            conn.connectTimeout = 2000; conn.readTimeout = 2000
-                            title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
-                        } catch(e: Exception){}
                     }
 
                     if (title.isNotEmpty()) updateSongInfo(title)
@@ -657,15 +683,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupPlayerListener() {
         player?.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Плей", "Oynat") }
+            override fun onIsPlayingChanged(isPlaying: Boolean) { 
+                btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat") 
+            }
             
-            // НОВОЕ: Как только заиграло аудио — убираем слово "Загрузка..."
+            // Если звук пошел и названия еще нет, убираем надпись "Загрузка..."
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY) {
-                    if (currentSongMetadata.isEmpty()) {
-                        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-                        runOnUiThread { stationNameText.text = stName }
-                    }
+                if (playbackState == Player.STATE_READY && currentSongMetadata.isEmpty()) {
+                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                    runOnUiThread { stationNameText.text = stName }
                 }
             }
 
@@ -758,10 +784,7 @@ class MainActivity : AppCompatActivity() {
                     if (url.isNotEmpty()) stations.add(Station.fromJson(o))
                 }
                 stations.sortBy { it.name.lowercase(Locale.getDefault()) }
-                runOnUiThread { 
-                    updateList(stations.map { it.name }) 
-                    listView.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
-                }
+                runOnUiThread { updateList(stations.map { it.name }) }
             } catch (e: Exception) {}
         }
     }
@@ -774,10 +797,7 @@ class MainActivity : AppCompatActivity() {
                 countries.clear()
                 for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
                 countries.sort(); 
-                runOnUiThread { 
-                    updateList(countries) 
-                    listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
-                }
+                runOnUiThread { updateList(countries) }
             } catch (e: Exception) {}
         }
     }
