@@ -40,6 +40,7 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.regex.Pattern
+import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
 class MainActivity : AppCompatActivity() {
@@ -78,7 +79,6 @@ class MainActivity : AppCompatActivity() {
     private var metadataTimer: Timer? = null
     private var currentStreamUrlForMetadata = ""
 
-    // Прием команд от гарнитуры
     private val playerActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -214,20 +214,17 @@ class MainActivity : AppCompatActivity() {
 
         listView = ListView(this)
         
-        // ИСПРАВЛЕНИЕ: Список стран больше не ломается! 
-        // Меню TalkBack применяется только к станциям.
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val view = super.getView(position, convertView, parent)
                 
-                // Всегда сначала сбрасываем старый делегат
+                // ИСПРАВЛЕНИЕ 1: Очищаем делегат, чтобы не ломать список стран
                 ViewCompat.setAccessibilityDelegate(view, null)
 
-                // Если это список стран - меню станций не применяем!
                 if (currentMode == "COUNTRIES") return view
 
                 val list = if (currentMode == "FAVORITES") favorites else stations
-                if (position < list.size) {
+                if (position >= 0 && position < list.size) {
                     ViewCompat.setAccessibilityDelegate(view, object : AccessibilityDelegateCompat() {
                         override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
                             super.onInitializeAccessibilityNodeInfo(host, info)
@@ -275,10 +272,7 @@ class MainActivity : AppCompatActivity() {
         
         val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); setOnClickListener { playPrev() } }
-        
-        // ИСПРАВЛЕНИЕ: Кнопка Воспроизвести / Oynat
         btnPlayPause = Button(this).apply { text = getStr("Воспроизвести", "Oynat"); setOnClickListener { togglePlayPause() } }
-        
         val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); setOnClickListener { playNext() } }
         
         controlsLayout.addView(btnPrevBtn); controlsLayout.addView(btnPlayPause); controlsLayout.addView(btnNextBtn)
@@ -323,7 +317,6 @@ class MainActivity : AppCompatActivity() {
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
-                // ИСПРАВЛЕНИЕ: Заголовок всегда Radio Player
                 supportActionBar?.title = "Radio Player"
             }
             "SEARCH_RESULTS" -> { 
@@ -510,16 +503,16 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
     }
 
-    // ИСПРАВЛЕНИЕ: Блокировка дублирования названия радиостанции
+    // ИСПРАВЛЕНИЕ 2: Защита от дублирования названия станции
     private fun updateSongInfo(title: String) {
         val cleanTitle = title.trim()
         val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
         
-        // Если пришло название самой станции - игнорируем! (Решает проблему с JoyTurk Akustik)
         if (cleanTitle.isNotEmpty() && 
-            cleanTitle.lowercase() != stName.lowercase() && 
+            !cleanTitle.equals(stName, ignoreCase = true) && 
             cleanTitle != currentSongMetadata && 
-            cleanTitle != "Радио" && cleanTitle != "Radyo" && cleanTitle.lowercase() != "unknown") {
+            cleanTitle != "Радио" && cleanTitle != "Radyo" && 
+            !cleanTitle.equals("unknown", ignoreCase = true)) {
             
             currentSongMetadata = cleanTitle
             runOnUiThread {
@@ -609,7 +602,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // ИСПРАВЛЕНИЕ: Идеальный парсер, скопированный с твоего Python: _try_direct_stream
+    // ИСПРАВЛЕНИЕ 3: Полная 1 в 1 копия Python логики для StreamTheWorld (Mydonose)
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -627,8 +620,8 @@ class MainActivity : AppCompatActivity() {
                     // 1. _try_shoutcast_v2
                     try {
                         val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
-                        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                        conn.connectTimeout = 4000; conn.readTimeout = 4000
+                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        conn.connectTimeout = 3000; conn.readTimeout = 3000
                         val matcher = Pattern.compile("<SONGTITLE>(.*?)</SONGTITLE>").matcher(conn.inputStream.bufferedReader().readText())
                         if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
                     } catch(e: Exception){}
@@ -637,8 +630,8 @@ class MainActivity : AppCompatActivity() {
                     if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                            conn.connectTimeout = 4000; conn.readTimeout = 4000
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            conn.connectTimeout = 3000; conn.readTimeout = 3000
                             title = JSONObject(conn.inputStream.bufferedReader().readText()).optString("songtitle", "")
                         } catch(e: Exception){}
                     }
@@ -647,8 +640,8 @@ class MainActivity : AppCompatActivity() {
                     if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
-                            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                            conn.connectTimeout = 4000; conn.readTimeout = 4000
+                            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            conn.connectTimeout = 3000; conn.readTimeout = 3000
                             val source = JSONObject(conn.inputStream.bufferedReader().readText()).optJSONObject("icestats")?.opt("source")
                             if (source is JSONArray && source.length() > 0) {
                                 title = source.getJSONObject(0).optString("title", "")
@@ -658,7 +651,7 @@ class MainActivity : AppCompatActivity() {
                         } catch (e: Exception) {}
                     }
 
-                    // 4. _try_direct_stream (Точная копия твоего Python: Читаем байты как ISO_8859_1 чтобы не сломать регулярку!)
+                    // 4. _try_direct_stream: Читаем сырые байты сокета (Как в твоем Питон-скрипте)
                     if (title.isEmpty()) {
                         try {
                             val isHttps = protocol == "https"
@@ -667,23 +660,23 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 java.net.Socket(host, port)
                             }
-                            socket.soTimeout = 5000
+                            socket.soTimeout = 4000
                             
                             val out = socket.getOutputStream()
                             val path = if (parsedUrl.file.isEmpty()) "/" else parsedUrl.file
-                            val authority = parsedUrl.authority ?: host
+                            val authority = if (port == 80 || port == 443) host else "$host:$port"
                             
                             val request = "GET $path HTTP/1.0\r\n" +
                                           "Host: $authority\r\n" +
                                           "Icy-MetaData: 1\r\n" +
-                                          "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n" +
+                                          "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n" +
                                           "Accept: */*\r\n" +
                                           "Connection: close\r\n\r\n"
-                            out.write(request.toByteArray(Charsets.UTF_8))
+                            out.write(request.toByteArray(Charsets.US_ASCII))
                             out.flush()
                             
                             val input = socket.getInputStream()
-                            val buffer = ByteArray(8192) // Как в Python (recv 8192)
+                            val buffer = ByteArray(8192)
                             var readTotal = 0
                             while (readTotal < 8192) {
                                 val r = input.read(buffer, readTotal, 8192 - readTotal)
@@ -692,13 +685,13 @@ class MainActivity : AppCompatActivity() {
                             }
                             socket.close()
                             
-                            // Читаем сырые байты без повреждения (Эквивалент Python b"StreamTitle='...'")
+                            // Важно: ISO_8859_1 не ломает бинарные данные, как это делал UTF-8!
                             val rawData = String(buffer, 0, readTotal, Charsets.ISO_8859_1)
                             if (rawData.contains("ICY", ignoreCase = true) || rawData.contains("icy-metaint", ignoreCase = true)) {
-                                val matcher = Pattern.compile("StreamTitle='([^']*)'").matcher(rawData)
+                                val matcher = Pattern.compile("StreamTitle='([^']*)';").matcher(rawData)
                                 if (matcher.find()) {
                                     val extracted = matcher.group(1) ?: ""
-                                    // Конвертируем обратно в нормальный UTF-8 (Эквивалент Python .decode('utf-8'))
+                                    // Конвертируем название обратно в нормальный текст
                                     title = String(extracted.toByteArray(Charsets.ISO_8859_1), Charsets.UTF_8).trim()
                                 }
                             }
@@ -717,7 +710,6 @@ class MainActivity : AppCompatActivity() {
                 btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat") 
             }
             
-            // Как только радио заиграло - убираем надпись "Загрузка..."
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     if (currentSongMetadata.isEmpty()) {
