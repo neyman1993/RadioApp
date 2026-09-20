@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     private var recordThread: Thread? = null
     
     private var metadataTimer: Timer? = null
+    private var currentStreamUrlForMetadata = "" // ВОТ ЭТА ПЕРЕМЕННАЯ БЫЛА УПУЩЕНА
 
     // Прием команд от гарнитуры
     private val playerActionReceiver = object : BroadcastReceiver() {
@@ -282,11 +283,11 @@ class MainActivity : AppCompatActivity() {
         btnSearchTab.setOnClickListener { showSearchDialog() }
         btnCountriesTab.setOnClickListener { 
             currentMode = "COUNTRIES"; updateUIForMode()
-            if (countries.isEmpty()) loadCountries() else { updateList(countries); listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
+            if (countries.isEmpty()) loadCountries() else { updateList(countries); stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
         btnFavTab.setOnClickListener { 
             currentMode = "FAVORITES"; updateUIForMode()
-            updateList(favorites.map { it.name }); listView.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
+            updateList(favorites.map { it.name }); stationNameText.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
 
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -588,7 +589,6 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    // РЕАЛИЗАЦИЯ ИЗ ТВОЕГО ФАЙЛА radio_now_playing_2.py
     private fun startMetadataFetcher(urlStr: String, stationName: String) {
         metadataTimer?.cancel()
         currentStreamUrlForMetadata = urlStr
@@ -603,7 +603,6 @@ class MainActivity : AppCompatActivity() {
                     val port = if (parsedUrl.port == -1) (if (parsedUrl.protocol == "https") 443 else 80) else parsedUrl.port
                     val protocol = parsedUrl.protocol
 
-                    // МЕТОД 1: _try_shoutcast_v2 (admin.cgi?mode=viewxml)
                     try {
                         val conn = URL("$protocol://$host:$port/admin.cgi?mode=viewxml").openConnection() as HttpURLConnection
                         conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -612,7 +611,6 @@ class MainActivity : AppCompatActivity() {
                         if (matcher.find()) title = matcher.group(1)?.trim() ?: ""
                     } catch(e: Exception){}
 
-                    // МЕТОД 2: _try_shoutcast_v1 (stats?json=1)
                     if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/stats?json=1").openConnection() as HttpURLConnection
@@ -622,7 +620,6 @@ class MainActivity : AppCompatActivity() {
                         } catch(e: Exception){}
                     }
 
-                    // МЕТОД 3: _try_icecast (status-json.xsl)
                     if (title.isEmpty()) {
                         try {
                             val conn = URL("$protocol://$host:$port/status-json.xsl").openConnection() as HttpURLConnection
@@ -637,7 +634,6 @@ class MainActivity : AppCompatActivity() {
                         } catch (e: Exception) {}
                     }
 
-                    // МЕТОД 4: _try_direct_stream (Сырые сокеты, как в Питоне)
                     if (title.isEmpty()) {
                         try {
                             val isHttps = protocol == "https"
@@ -687,7 +683,6 @@ class MainActivity : AppCompatActivity() {
                 btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat") 
             }
             
-            // Если звук пошел и названия еще нет, убираем надпись "Загрузка..."
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY && currentSongMetadata.isEmpty()) {
                     val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
@@ -784,7 +779,10 @@ class MainActivity : AppCompatActivity() {
                     if (url.isNotEmpty()) stations.add(Station.fromJson(o))
                 }
                 stations.sortBy { it.name.lowercase(Locale.getDefault()) }
-                runOnUiThread { updateList(stations.map { it.name }) }
+                runOnUiThread { 
+                    updateList(stations.map { it.name }) 
+                    stationNameText.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
+                }
             } catch (e: Exception) {}
         }
     }
@@ -797,7 +795,10 @@ class MainActivity : AppCompatActivity() {
                 countries.clear()
                 for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
                 countries.sort(); 
-                runOnUiThread { updateList(countries) }
+                runOnUiThread { 
+                    updateList(countries) 
+                    stationNameText.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
+                }
             } catch (e: Exception) {}
         }
     }
