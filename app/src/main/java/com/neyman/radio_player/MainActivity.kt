@@ -66,6 +66,19 @@ class MainActivity : AppCompatActivity() {
     private var isRecording = false
     private var recordThread: Thread? = null
 
+    // Строгий список жанров, независимый от языка системы
+    private val MAIN_GENRES = listOf(
+        "60s", "70s", "80s", "90s", "2000s", "acoustic", "adult", "alternative", "ambient",
+        "blues", "classical", "country", "dance", "disco", "electronic", "folk", "funk",
+        "gospel", "hip hop", "hits", "house", "indie", "jazz", "latin", "lounge", "love",
+        "metal", "oldies", "pop", "punk", "rap", "reggae", "rnb", "rock", "soul", "techno",
+        "top 40", "african", "arabic", "asian", "bollywood", "christian", "christmas",
+        "contemporary", "instrumental", "irish", "islamic", "japanese", "jewish", "korean",
+        "meditation", "minimal", "nature", "news", "opera", "polish", "portuguese", "russian",
+        "salsa", "smooth jazz", "spanish", "sports", "swing", "talk", "tango", "tropical",
+        "turkish", "urban", "variety", "world"
+    )
+
     private val playbackReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -85,8 +98,10 @@ class MainActivity : AppCompatActivity() {
                     btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat")
                 }
                 "com.neyman.radio.ERROR" -> {
+                    val errCode = intent.getIntExtra("error_code", -1)
                     val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
-                    stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName
+                    val errText = if (errCode != -1) " (Code: $errCode)" else ""
+                    stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName + errText
                     btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
                 }
@@ -333,12 +348,10 @@ class MainActivity : AppCompatActivity() {
             if (position in list.indices) { showStationListMenu(list[position]); true } else false
         }
 
-        // --- Обработка автовоспроизведения при запуске ---
         val lastStation = settings.getLastStation()
         if (lastStation != null) {
             stationNameText.text = lastStation.name
             if (settings.autoplayAtStart) {
-                // Имитируем клик по последней станции (создаем временный плейлист из одной станции)
                 currentPlaylist = arrayListOf(lastStation)
                 currentStationIndex = 0
                 playStation(0, currentPlaylist)
@@ -484,7 +497,6 @@ class MainActivity : AppCompatActivity() {
             settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang))
         }
 
-        // Новый переключатель "Автоматическое воспроизведение"
         addHeader(getStr("Автоматическое воспроизведение при запуске", "Başlangıçta otomatik oynat"))
         val autoplaySwitch = Switch(this).apply { 
             isChecked = settings.autoplayAtStart
@@ -675,7 +687,6 @@ class MainActivity : AppCompatActivity() {
         currentStationIndex = index
         val station = currentPlaylist[index]
         
-        // Сохраняем последнюю станцию
         settings.saveLastStation(station)
         
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
@@ -690,7 +701,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun togglePlayPause() {
-        // Если станция не выбрана, пытаемся включить последнюю
         if (currentStationIndex == -1 || currentPlaylist.isEmpty()) {
             val lastStation = settings.getLastStation()
             if (lastStation != null) {
@@ -704,7 +714,6 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, PlaybackService::class.java).apply { action = "TOGGLE" }
         ContextCompat.startForegroundService(this, intent)
     }
-
 
     private fun playNext() {
         if (currentPlaylist.isEmpty()) return
@@ -766,24 +775,35 @@ class MainActivity : AppCompatActivity() {
     
     private fun loadGenres() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+        
+        genres.clear()
+        genres.addAll(MAIN_GENRES.map { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(Locale.US) else c.toString() } })
+        updateList(genres)
+        
         thread {
             try {
-                // Используем правильный endpoint bytagexact для списка
                 val res = fetchJson("https://all.api.radio-browser.info/json/tags")
-                genres.clear()
-                
-                // Фильтруем по списку MAIN_GENRES, как в Python
-                val mainGenres = listOf("60s", "70s", "80s", "90s", "2000s", "acoustic", "adult", "alternative", "ambient", "blues", "classical", "country", "dance", "disco", "electronic", "folk", "funk", "gospel", "hip hop", "hits", "house", "indie", "jazz", "latin", "lounge", "love", "metal", "oldies", "pop", "punk", "rap", "reggae", "rnb", "rock", "soul", "techno", "top 40", "african", "arabic", "asian", "bollywood", "christian", "christmas", "contemporary", "instrumental", "irish", "islamic", "japanese", "jewish", "korean", "meditation", "minimal", "nature", "news", "opera", "polish", "portuguese", "russian", "salsa", "smooth jazz", "spanish", "sports", "swing", "talk", "tango", "tropical", "turkish", "urban", "variety", "world")
-                
+                val tagCounts = HashMap<String, Int>()
                 for (i in 0 until res.length()) { 
                     val o = res.getJSONObject(i)
-                    val name = o.optString("name").lowercase(Locale.getDefault())
-                    if (o.optInt("stationcount") > 0 && mainGenres.contains(name)) {
-                        genres.add(name.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() } + " (" + o.optInt("stationcount") + ")") 
+                    val name = o.optString("name").lowercase(Locale.US)
+                    tagCounts[name] = o.optInt("stationcount")
+                }
+                
+                val updatedGenres = ArrayList<String>()
+                for (genre in MAIN_GENRES) {
+                    val count = tagCounts[genre] ?: 0
+                    val displayName = genre.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+                    if (count > 0) {
+                        updatedGenres.add("$displayName ($count)")
+                    } else {
+                        updatedGenres.add(displayName)
                     }
                 }
-                genres.sortBy { it.lowercase(Locale.getDefault()) }
+                
                 runOnUiThread { 
+                    genres.clear()
+                    genres.addAll(updatedGenres)
                     updateList(genres) 
                     listView.announceForAccessibility(getStr("Загружено ${genres.size} жанров", "${genres.size} tür yüklendi"))
                 }
@@ -802,8 +822,7 @@ class MainActivity : AppCompatActivity() {
         currentGenreName = genre
         currentMode = "STATIONS_OF_GENRE"
         updateUIForMode()
-        // Используем bytagexact, как ты просил в Python-скрипте
-        fetchStations("bytagexact/" + URLEncoder.encode(genre.lowercase(Locale.getDefault()), "UTF-8"))
+        fetchStations("bytagexact/" + URLEncoder.encode(genre.lowercase(Locale.US), "UTF-8"))
     }
 
     private fun fetchJson(url: String): JSONArray {

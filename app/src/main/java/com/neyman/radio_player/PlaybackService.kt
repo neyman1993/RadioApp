@@ -14,6 +14,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import com.un4seen.bass.BASS
+import com.un4seen.bass.BASSHLS
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -39,9 +40,12 @@ class PlaybackService : Service() {
         BASS.BASS_Init(-1, 44100, 0)
         BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
+        // ВАЖНО: Разрешаем BASS автоматически открывать плейлисты и перенаправления (для Mydonose, DalgaFM)
+        BASS.BASS_SetConfig(21, 1) // BASS_CONFIG_NET_PLAYLIST
+        BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
+        
         try {
-            val hlsPath = applicationInfo.nativeLibraryDir + "/libbasshls.so"
-            BASS.BASS_PluginLoad(hlsPath, 0)
+            BASS.BASS_PluginLoad("libbasshls.so", 0)
         } catch (e: Exception) { }
 
         setupMediaSession()
@@ -100,10 +104,21 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
+            // Пробуем запустить стандартный поток BASS
             streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
             
+            // Если стандартный метод не сработал (например, это чистый HLS m3u8), запускаем HLS плагин как в Питоне
             if (streamHandle == 0) {
-                sendActionToActivity("com.neyman.radio.ERROR")
+                try {
+                    streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
+                } catch (e: Exception) { }
+            }
+            
+            if (streamHandle == 0) {
+                val errCode = BASS.BASS_ErrorGetCode()
+                val errIntent = Intent("com.neyman.radio.ERROR")
+                errIntent.putExtra("error_code", errCode)
+                sendLocalBroadcast(errIntent)
                 return@Thread
             }
 
@@ -219,7 +234,7 @@ class PlaybackService : Service() {
     private fun updateSessionState(state: Int) {
         val closeCustomAction = PlaybackStateCompat.CustomAction.Builder(
             "ACTION_STOP_SERVICE",
-            getStr("Закрыть", "Kapat"), // Правильный перевод для TalkBack
+            getStr("Закрыть", "Kapat"), 
             android.R.drawable.ic_menu_close_clear_cancel
         ).build()
 
@@ -263,7 +278,6 @@ class PlaybackService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(currentStationName)
             .setContentText(textToDisplay)
-            // Строгий порядок и перевод кнопок
             .addAction(android.R.drawable.ic_media_previous, getStr("Предыдущая", "Önceki"), prevPending)
             .addAction(playPauseIcon, playPauseActionName, playPausePending)
             .addAction(android.R.drawable.ic_media_next, getStr("Следующая", "Sonraki"), nextPending)
