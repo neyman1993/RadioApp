@@ -40,14 +40,21 @@ class PlaybackService : Service() {
         BASS.BASS_Init(-1, 44100, 0)
         BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
-        // ТОЧНАЯ КОПИЯ НАСТРОЕК ИЗ ТВОЕГО PYTHON СКРИПТА:
+        // Настройки из твоего Python файла
         BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
         BASS.BASS_SetConfig(14, 10000) // BASS_CONFIG_NET_READTIMEOUT
         BASS.BASS_SetConfig(18, 1)     // BASS_CONFIG_NET_PREBUF
-        
-        // Загружаем плагин HLS надежным способом (для разных версий Android)
+
+        val nativeDir = applicationInfo.nativeLibraryDir
+
+        // 1. Обязательно загружаем декодер AAC (исправляет Код 10 для DalgaFM, Mydonose и ITV)
+        if (BASS.BASS_PluginLoad("libbassaac.so", 0) == 0) {
+            BASS.BASS_PluginLoad("$nativeDir/libbassaac.so", 0)
+        }
+
+        // 2. Загружаем обработчик HLS (.m3u8)
         if (BASS.BASS_PluginLoad("libbasshls.so", 0) == 0) {
-            BASS.BASS_PluginLoad(applicationInfo.nativeLibraryDir + "/libbasshls.so", 0)
+            BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
         }
 
         setupMediaSession()
@@ -113,16 +120,17 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            // 1. Пробуем стандартный метод BASS
+            // Сначала пробуем запустить стандартным движком BASS
             streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
             
-            // 2. ТОЧНО КАК В PYTHON: Если стандартный метод не сработал (HLS / m3u8), запускаем BASS_HLS
+            // Если вернулся 0 (это HLS или сложный плейлист), запускаем BASSHLS
             if (streamHandle == 0) {
                 try {
                     streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
                 } catch (e: Exception) { }
             }
             
+            // Проверка на ошибку
             if (streamHandle == 0) {
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")
