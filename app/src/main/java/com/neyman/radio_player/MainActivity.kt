@@ -66,7 +66,15 @@ class MainActivity : AppCompatActivity() {
     private var isRecording = false
     private var recordThread: Thread? = null
 
-    // Строгий список жанров, независимый от языка системы
+    private val API_SERVERS = listOf(
+        "all.api.radio-browser.info",
+        "de2.api.radio-browser.info",
+        "de1.api.radio-browser.info",
+        "nl1.api.radio-browser.info",
+        "at1.api.radio-browser.info",
+        "fi1.api.radio-browser.info"
+    )
+
     private val MAIN_GENRES = listOf(
         "60s", "70s", "80s", "90s", "2000s", "acoustic", "adult", "alternative", "ambient",
         "blues", "classical", "country", "dance", "disco", "electronic", "folk", "funk",
@@ -727,17 +735,36 @@ class MainActivity : AppCompatActivity() {
         playStation(prevIdx, currentPlaylist)
     }
 
+    private fun fetchJsonWithFallback(endpoint: String): JSONArray {
+        for (server in API_SERVERS) {
+            try {
+                val fullUrl = "https://$server/json/$endpoint"
+                val c = (URL(fullUrl).openConnection() as HttpURLConnection).apply { 
+                    connectTimeout = 5000 
+                    readTimeout = 5000 
+                    setRequestProperty("User-Agent", "radio_player") 
+                }
+                if (c.responseCode == 200) {
+                    return JSONArray(c.inputStream.bufferedReader().use { it.readText() })
+                }
+            } catch (e: Exception) {
+                continue
+            }
+        }
+        return JSONArray()
+    }
+
     private fun fetchStations(endpoint: String, isSearch: Boolean = false) {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             try {
-                val urlStr = if (isSearch) {
-                    "https://all.api.radio-browser.info/json/stations/search?name=${URLEncoder.encode(endpoint, "UTF-8")}&limit=100000"
+                val apiPath = if (isSearch) {
+                    "stations/search?name=${URLEncoder.encode(endpoint, "UTF-8")}&limit=100000"
                 } else {
-                    "https://all.api.radio-browser.info/json/stations/$endpoint?limit=100000"
+                    "stations/$endpoint?limit=100000"
                 }
                 
-                val res = fetchJson(urlStr)
+                val res = fetchJsonWithFallback(apiPath)
                 var rawList = ArrayList<JSONObject>()
                 for (i in 0 until res.length()) { rawList.add(res.getJSONObject(i)) }
                 if (settings.hideDuplicates) { rawList = ArrayList(StationDeduplicator.removeDuplicates(rawList)) }
@@ -761,7 +788,7 @@ class MainActivity : AppCompatActivity() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             try {
-                val res = fetchJson("https://all.api.radio-browser.info/json/countries")
+                val res = fetchJsonWithFallback("countries")
                 countries.clear()
                 for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
                 countries.sort(); 
@@ -782,7 +809,7 @@ class MainActivity : AppCompatActivity() {
         
         thread {
             try {
-                val res = fetchJson("https://all.api.radio-browser.info/json/tags")
+                val res = fetchJsonWithFallback("tags")
                 val tagCounts = HashMap<String, Int>()
                 for (i in 0 until res.length()) { 
                     val o = res.getJSONObject(i)
@@ -823,13 +850,6 @@ class MainActivity : AppCompatActivity() {
         currentMode = "STATIONS_OF_GENRE"
         updateUIForMode()
         fetchStations("bytagexact/" + URLEncoder.encode(genre.lowercase(Locale.US), "UTF-8"))
-    }
-
-    private fun fetchJson(url: String): JSONArray {
-        return try {
-            val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout=15000; readTimeout=15000; setRequestProperty("User-Agent", "radio_player") }
-            JSONArray(c.inputStream.bufferedReader().use { it.readText() })
-        } catch (e: Exception) { JSONArray() }
     }
 
     private fun updateList(items: List<String>) { listAdapter.clear(); listAdapter.addAll(items); listAdapter.notifyDataSetChanged() }

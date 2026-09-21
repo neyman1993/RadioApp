@@ -39,8 +39,6 @@ class PlaybackService : Service() {
 
         BASS.BASS_Init(-1, 44100, 0)
         BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        
-        // ВАЖНО: Разрешаем BASS автоматически открывать плейлисты и перенаправления (для Mydonose, DalgaFM)
         BASS.BASS_SetConfig(21, 1) // BASS_CONFIG_NET_PLAYLIST
         BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
         
@@ -75,6 +73,16 @@ class PlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // КРИТИЧЕСКИЙ ФИКС КРАША 5 СЕКУНД:
+        // Android требует немедленного вызова startForeground. Если streamHandle == 0,
+        // вывешиваем хотя бы статус PAUSED или BUFFERING, чтобы система не убила приложение.
+        val fallbackName = currentStationName.ifEmpty { "Radio Player" }
+        showNotification(
+            if (streamHandle == 0) PlaybackStateCompat.STATE_PAUSED else PlaybackStateCompat.STATE_BUFFERING,
+            if (streamHandle == 0) getStr("Остановлено", "Durduruldu") else getStr("Загрузка...", "Yükleniyor..."),
+            fallbackName
+        )
+
         when (intent?.action) {
             "PLAY_STATION" -> {
                 currentUrl = intent.getStringExtra("url") ?: ""
@@ -104,10 +112,8 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            // Пробуем запустить стандартный поток BASS
             streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
             
-            // Если стандартный метод не сработал (например, это чистый HLS m3u8), запускаем HLS плагин как в Питоне
             if (streamHandle == 0) {
                 try {
                     streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
@@ -119,6 +125,7 @@ class PlaybackService : Service() {
                 val errIntent = Intent("com.neyman.radio.ERROR")
                 errIntent.putExtra("error_code", errCode)
                 sendLocalBroadcast(errIntent)
+                showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка: $errCode", "Hata: $errCode"))
                 return@Thread
             }
 
@@ -248,7 +255,7 @@ class PlaybackService : Service() {
         mediaSession.setPlaybackState(playbackState)
     }
 
-    private fun showNotification(state: Int, textToDisplay: String) {
+    private fun showNotification(state: Int, textToDisplay: String, explicitTitle: String? = null) {
         val channelId = "radio_playback_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(channelId, "Radio Playback", NotificationManager.IMPORTANCE_LOW)
@@ -274,9 +281,11 @@ class PlaybackService : Service() {
         val closeIntent = Intent(this, PlaybackService::class.java).apply { action = "STOP_SERVICE" }
         val closePending = PendingIntent.getService(this, 4, closeIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+        val finalTitle = explicitTitle ?: currentStationName
+
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle(currentStationName)
+            .setContentTitle(finalTitle)
             .setContentText(textToDisplay)
             .addAction(android.R.drawable.ic_media_previous, getStr("Предыдущая", "Önceki"), prevPending)
             .addAction(playPauseIcon, playPauseActionName, playPausePending)
