@@ -39,11 +39,14 @@ class PlaybackService : Service() {
 
         BASS.BASS_Init(-1, 44100, 0)
         BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        BASS.BASS_SetConfig(21, 1) // BASS_CONFIG_NET_PLAYLIST
-        BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
+        BASS.BASS_SetConfig(21, 1) // Включаем поддержку серверных плейлистов (BASS_CONFIG_NET_PLAYLIST)
+        BASS.BASS_SetConfig(11, 10000) // Таймаут
         
         try {
-            BASS.BASS_PluginLoad("libbasshls.so", 0)
+            // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Возвращен полный путь к nativeLibraryDir. 
+            // Без него Android не мог загрузить libbasshls.so и выдавал Ошибку 10 на HLS
+            val hlsPath = applicationInfo.nativeLibraryDir + "/libbasshls.so"
+            BASS.BASS_PluginLoad(hlsPath, 0)
         } catch (e: Exception) { }
 
         setupMediaSession()
@@ -73,9 +76,6 @@ class PlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // КРИТИЧЕСКИЙ ФИКС КРАША 5 СЕКУНД:
-        // Android требует немедленного вызова startForeground. Если streamHandle == 0,
-        // вывешиваем хотя бы статус PAUSED или BUFFERING, чтобы система не убила приложение.
         val fallbackName = currentStationName.ifEmpty { "Radio Player" }
         showNotification(
             if (streamHandle == 0) PlaybackStateCompat.STATE_PAUSED else PlaybackStateCompat.STATE_BUFFERING,
@@ -112,20 +112,26 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
-            
-            if (streamHandle == 0) {
-                try {
+            // 1. Если это явный HLS (.m3u8), запускаем напрямую через HLS-плагин
+            if (currentUrl.contains(".m3u8", ignoreCase = true)) {
+                streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
+            } else {
+                // 2. Иначе используем стандартный BASS плеер
+                streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
+                
+                // 3. РЕЗЕРВ (как в Питоне): если стандартный плеер подавился и вернул Ошибку 10 (Скрытый HLS/Формат не распознан)
+                if (streamHandle == 0 && BASS.BASS_ErrorGetCode() == 10) {
                     streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
-                } catch (e: Exception) { }
+                }
             }
             
+            // Если даже HLS-плагин не смог открыть поток - выводим ошибку
             if (streamHandle == 0) {
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")
                 errIntent.putExtra("error_code", errCode)
                 sendLocalBroadcast(errIntent)
-                showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка: $errCode", "Hata: $errCode"))
+                showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка: $errCode", "Hata: $errCode"), currentStationName)
                 return@Thread
             }
 
