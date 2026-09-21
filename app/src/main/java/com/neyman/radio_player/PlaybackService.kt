@@ -49,7 +49,6 @@ class PlaybackService : Service() {
 
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
-    // Метод для гарантированной доставки сигналов в MainActivity (обходит блокировки Android 14)
     private fun sendLocalBroadcast(intent: Intent) {
         intent.setPackage(packageName)
         sendBroadcast(intent)
@@ -113,7 +112,6 @@ class PlaybackService : Service() {
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
             
-            // Отправляем железобетонный сигнал в UI, что загрузка завершена
             val readyIntent = Intent("com.neyman.radio.READY")
             readyIntent.putExtra("name", currentStationName)
             sendLocalBroadcast(readyIntent)
@@ -219,10 +217,9 @@ class PlaybackService : Service() {
     }
 
     private fun updateSessionState(state: Int) {
-        // Железобетонная кнопка "Закрыть" для новых Android (13+)
         val closeCustomAction = PlaybackStateCompat.CustomAction.Builder(
             "ACTION_STOP_SERVICE",
-            "Close",
+            getStr("Закрыть", "Kapat"), // Правильный перевод для TalkBack
             android.R.drawable.ic_menu_close_clear_cancel
         ).build()
 
@@ -248,7 +245,7 @@ class PlaybackService : Service() {
         val isBuffering = state == PlaybackStateCompat.STATE_BUFFERING
         
         val playPauseIcon = if (isPlaying || isBuffering) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
-        val playPauseActionName = if (isPlaying || isBuffering) "Pause" else "Play"
+        val playPauseActionName = if (isPlaying || isBuffering) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat")
 
         val playPauseIntent = Intent(this, PlaybackService::class.java).apply { action = "TOGGLE" }
         val playPausePending = PendingIntent.getService(this, 1, playPauseIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -266,15 +263,16 @@ class PlaybackService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(currentStationName)
             .setContentText(textToDisplay)
-            .addAction(android.R.drawable.ic_media_previous, "Prev", prevPending)
+            // Строгий порядок и перевод кнопок
+            .addAction(android.R.drawable.ic_media_previous, getStr("Предыдущая", "Önceki"), prevPending)
             .addAction(playPauseIcon, playPauseActionName, playPausePending)
-            .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", closePending)
+            .addAction(android.R.drawable.ic_media_next, getStr("Следующая", "Sonraki"), nextPending)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, getStr("Закрыть", "Kapat"), closePending) 
             .setDeleteIntent(closePending)
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setMediaSession(mediaSession.sessionToken)
                 .setShowActionsInCompactView(0, 1, 2)
-                .setShowCancelButton(true) // Обязательно для старых Android
+                .setShowCancelButton(true) 
                 .setCancelButtonIntent(closePending))
             .setOngoing(isPlaying || isBuffering)
             .build()

@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
 
     private val stations = ArrayList<Station>()
     private val countries = ArrayList<String>()
+    private val genres = ArrayList<String>()
     private var favorites = ArrayList<Station>()
     private var currentPlaylist = ArrayList<Station>()
     private var currentStationIndex = -1
@@ -56,6 +57,7 @@ class MainActivity : AppCompatActivity() {
     private var currentMode = "MAIN_MENU"
     private var preSettingsMode = "MAIN_MENU"
     private var currentCountryName = ""
+    private var currentGenreName = ""
     private var isTr = false
     private var currentSongMetadata = ""
 
@@ -218,9 +220,15 @@ class MainActivity : AppCompatActivity() {
         
         val btnSearchTab = Button(this).apply { text = getStr("Поиск", "Arama"); layoutParams = btnParams }
         val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler"); layoutParams = btnParams }
+        val btnGenresTab = Button(this).apply { text = getStr("Жанры", "Türler"); layoutParams = btnParams }
+        val btnTopTab = Button(this).apply { text = getStr("Популярные", "Popüler"); layoutParams = btnParams }
         val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); layoutParams = btnParams }
         
-        navLayout.addView(btnSearchTab); navLayout.addView(btnCountriesTab); navLayout.addView(btnFavTab)
+        navLayout.addView(btnSearchTab)
+        navLayout.addView(btnCountriesTab)
+        navLayout.addView(btnGenresTab)
+        navLayout.addView(btnTopTab)
+        navLayout.addView(btnFavTab)
 
         listView = ListView(this)
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
@@ -228,7 +236,7 @@ class MainActivity : AppCompatActivity() {
                 val view = super.getView(position, convertView, parent)
                 
                 ViewCompat.setAccessibilityDelegate(view, null)
-                if (currentMode == "COUNTRIES") return view
+                if (currentMode == "COUNTRIES" || currentMode == "GENRES") return view
 
                 val list = if (currentMode == "FAVORITES") favorites else stations
                 if (position >= 0 && position < list.size) {
@@ -298,17 +306,29 @@ class MainActivity : AppCompatActivity() {
             currentMode = "COUNTRIES"; updateUIForMode()
             if (countries.isEmpty()) loadCountries() else { updateList(countries); listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
+        btnGenresTab.setOnClickListener {
+            currentMode = "GENRES"; updateUIForMode()
+            if (genres.isEmpty()) loadGenres() else { updateList(genres); listView.announceForAccessibility(getStr("Загружено ${genres.size} жанров", "${genres.size} tür yüklendi")) }
+        }
+        btnTopTab.setOnClickListener {
+            currentMode = "TOP_STATIONS"; updateUIForMode()
+            fetchStations("topclick/100") 
+        }
         btnFavTab.setOnClickListener { 
             currentMode = "FAVORITES"; updateUIForMode()
             updateList(favorites.map { it.name }); listView.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
 
         listView.setOnItemClickListener { _, _, position, _ ->
-            if (currentMode == "COUNTRIES") { loadStationsByCountry(countries[position].split(" (")[0]) } 
-            else { playStation(position, if (currentMode == "FAVORITES") favorites else stations) }
+            when (currentMode) {
+                "COUNTRIES" -> loadStationsByCountry(countries[position].split(" (")[0])
+                "GENRES" -> loadStationsByGenre(genres[position].split(" (")[0])
+                else -> playStation(position, if (currentMode == "FAVORITES") favorites else stations)
+            }
         }
+        
         listView.setOnItemLongClickListener { _, _, position, _ ->
-            if (currentMode == "COUNTRIES") return@setOnItemLongClickListener false
+            if (currentMode == "COUNTRIES" || currentMode == "GENRES") return@setOnItemLongClickListener false
             val list = if (currentMode == "FAVORITES") favorites else stations
             if (position in list.indices) { showStationListMenu(list[position]); true } else false
         }
@@ -334,11 +354,29 @@ class MainActivity : AppCompatActivity() {
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Страны", "Ülkeler") 
             }
+            "GENRES" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Жанры", "Türler") 
+            }
             "STATIONS_OF_COUNTRY" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = currentCountryName 
+            }
+            "STATIONS_OF_GENRE" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = currentGenreName 
+            }
+            "TOP_STATIONS" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Популярные станции", "Popüler İstasyonlar") 
             }
             "FAVORITES" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
@@ -380,7 +418,8 @@ class MainActivity : AppCompatActivity() {
     override fun onBackPressed() {
         when (currentMode) {
             "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; updateUIForMode(); updateList(countries) }
-            "COUNTRIES", "FAVORITES", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
+            "STATIONS_OF_GENRE" -> { currentMode = "GENRES"; updateUIForMode(); updateList(genres) }
+            "COUNTRIES", "GENRES", "TOP_STATIONS", "FAVORITES", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
             "SETTINGS" -> { currentMode = preSettingsMode; updateUIForMode() }
             else -> super.onBackPressed()
         }
@@ -689,12 +728,40 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {}
         }
     }
+    
+    private fun loadGenres() {
+        stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+        thread {
+            try {
+                val res = fetchJson("https://all.api.radio-browser.info/json/tags")
+                genres.clear()
+                for (i in 0 until res.length()) { 
+                    val o = res.getJSONObject(i)
+                    if (o.optInt("stationcount") > 0) {
+                        genres.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") 
+                    }
+                }
+                genres.sortBy { it.lowercase(Locale.getDefault()) }
+                runOnUiThread { 
+                    updateList(genres) 
+                    listView.announceForAccessibility(getStr("Загружено ${genres.size} жанров", "${genres.size} tür yüklendi"))
+                }
+            } catch (e: Exception) {}
+        }
+    }
 
     private fun loadStationsByCountry(country: String) {
         currentCountryName = country
         currentMode = "STATIONS_OF_COUNTRY"
         updateUIForMode()
         fetchStations("bycountry/" + URLEncoder.encode(country, "UTF-8"))
+    }
+    
+    private fun loadStationsByGenre(genre: String) {
+        currentGenreName = genre
+        currentMode = "STATIONS_OF_GENRE"
+        updateUIForMode()
+        fetchStations("bytag/" + URLEncoder.encode(genre, "UTF-8"))
     }
 
     private fun fetchJson(url: String): JSONArray {
