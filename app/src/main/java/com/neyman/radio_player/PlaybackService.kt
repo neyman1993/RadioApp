@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -48,6 +49,12 @@ class PlaybackService : Service() {
 
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
+    // Метод для гарантированной доставки сигналов в MainActivity (обходит блокировки Android 14)
+    private fun sendLocalBroadcast(intent: Intent) {
+        intent.setPackage(packageName)
+        sendBroadcast(intent)
+    }
+
     private fun setupMediaSession() {
         mediaSession = MediaSessionCompat(this, "RadioSession").apply {
             setCallback(object : MediaSessionCompat.Callback() {
@@ -56,6 +63,9 @@ class PlaybackService : Service() {
                 override fun onStop() { stopServiceAndApp() }
                 override fun onSkipToNext() { sendActionToActivity("com.neyman.radio.NEXT") }
                 override fun onSkipToPrevious() { sendActionToActivity("com.neyman.radio.PREV") }
+                override fun onCustomAction(action: String?, extras: Bundle?) {
+                    if (action == "ACTION_STOP_SERVICE") stopServiceAndApp()
+                }
             })
             isActive = true
         }
@@ -103,11 +113,14 @@ class PlaybackService : Service() {
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
             
+            // Отправляем железобетонный сигнал в UI, что загрузка завершена
             val readyIntent = Intent("com.neyman.radio.READY")
             readyIntent.putExtra("name", currentStationName)
-            sendBroadcast(readyIntent)
+            sendLocalBroadcast(readyIntent)
             
-            sendStateToActivity(true)
+            val stateIntent = Intent("com.neyman.radio.STATE")
+            stateIntent.putExtra("isPlaying", true)
+            sendLocalBroadcast(stateIntent)
 
             startMetadataTimer()
         }.start()
@@ -121,12 +134,18 @@ class PlaybackService : Service() {
             BASS.BASS_ChannelPause(streamHandle)
             updateSessionState(PlaybackStateCompat.STATE_PAUSED)
             showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
-            sendStateToActivity(false)
+            
+            val stateIntent = Intent("com.neyman.radio.STATE")
+            stateIntent.putExtra("isPlaying", false)
+            sendLocalBroadcast(stateIntent)
         } else {
             BASS.BASS_ChannelPlay(streamHandle, false)
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
-            sendStateToActivity(true)
+            
+            val stateIntent = Intent("com.neyman.radio.STATE")
+            stateIntent.putExtra("isPlaying", true)
+            sendLocalBroadcast(stateIntent)
         }
     }
 
@@ -188,7 +207,7 @@ class PlaybackService : Service() {
             
             val intent = Intent("com.neyman.radio.METADATA")
             intent.putExtra("title", newTitle)
-            sendBroadcast(intent)
+            sendLocalBroadcast(intent)
             
             mediaSession.setMetadata(MediaMetadataCompat.Builder()
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, newTitle)
@@ -200,10 +219,18 @@ class PlaybackService : Service() {
     }
 
     private fun updateSessionState(state: Int) {
+        // Железобетонная кнопка "Закрыть" для новых Android (13+)
+        val closeCustomAction = PlaybackStateCompat.CustomAction.Builder(
+            "ACTION_STOP_SERVICE",
+            "Close",
+            android.R.drawable.ic_menu_close_clear_cancel
+        ).build()
+
         val playbackState = PlaybackStateCompat.Builder()
             .setActions(PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or 
                         PlaybackStateCompat.ACTION_SKIP_TO_NEXT or PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or 
                         PlaybackStateCompat.ACTION_STOP)
+            .addCustomAction(closeCustomAction)
             .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
             .build()
         mediaSession.setPlaybackState(playbackState)
@@ -243,10 +270,12 @@ class PlaybackService : Service() {
             .addAction(playPauseIcon, playPauseActionName, playPausePending)
             .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", closePending)
-            .setDeleteIntent(closePending) // Гарантированное закрытие при свайпе шторки
+            .setDeleteIntent(closePending)
             .setStyle(androidx.media.app.NotificationCompat.MediaStyle()
                 .setMediaSession(mediaSession.sessionToken)
-                .setShowActionsInCompactView(0, 1, 2))
+                .setShowActionsInCompactView(0, 1, 2)
+                .setShowCancelButton(true) // Обязательно для старых Android
+                .setCancelButtonIntent(closePending))
             .setOngoing(isPlaying || isBuffering)
             .build()
 
@@ -254,13 +283,8 @@ class PlaybackService : Service() {
     }
 
     private fun sendActionToActivity(actionStr: String) {
-        sendBroadcast(Intent(actionStr))
-    }
-
-    private fun sendStateToActivity(isPlaying: Boolean) {
-        val intent = Intent("com.neyman.radio.STATE")
-        intent.putExtra("isPlaying", isPlaying)
-        sendBroadcast(intent)
+        val intent = Intent(actionStr)
+        sendLocalBroadcast(intent)
     }
 
     private fun stopServiceAndApp() {

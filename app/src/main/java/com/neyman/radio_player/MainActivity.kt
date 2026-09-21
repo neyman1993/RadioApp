@@ -195,7 +195,7 @@ class MainActivity : AppCompatActivity() {
             addAction("com.neyman.radio.STOP_APP")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(playbackReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(playbackReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(playbackReceiver, filter)
         }
