@@ -15,6 +15,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import com.un4seen.bass.BASS
 import com.un4seen.bass.BASSHLS
+import com.un4seen.bass.BASS_AAC
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -38,7 +39,7 @@ class PlaybackService : Service() {
         isTr = locale == "tr"
 
         // 1. Предварительно загружаем нативные JNI-библиотеки в систему
-        // Это предотвращает UnsatisfiedLinkError при вызове методов из BASSHLS.java и BASS_AAC.java
+        // Это предотвращает UnsatisfiedLinkError при вызове методов из BASSHLS и BASS_AAC
         try { System.loadLibrary("bass") } catch (e: Throwable) {}
         try { System.loadLibrary("bassaac") } catch (e: Throwable) {}
         try { System.loadLibrary("basshls") } catch (e: Throwable) {}
@@ -52,13 +53,9 @@ class PlaybackService : Service() {
 
         val nativeDir = applicationInfo.nativeLibraryDir
 
-        // 2. Надежная загрузка плагинов. Пробуем загрузить по полному пути, 
-        // а если не выйдет (вернет 0) - используем короткое имя для встроенного загрузчика Android.
-        var aacPlugin = BASS.BASS_PluginLoad("$nativeDir/libbassaac.so", 0)
-        if (aacPlugin == 0) aacPlugin = BASS.BASS_PluginLoad("bassaac", 0)
-
-        var hlsPlugin = BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
-        if (hlsPlugin == 0) hlsPlugin = BASS.BASS_PluginLoad("basshls", 0)
+        // 2. Загружаем плагины по абсолютному пути (работает благодаря extractNativeLibs="true")
+        BASS.BASS_PluginLoad("$nativeDir/libbassaac.so", 0)
+        BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
 
         setupMediaSession()
     }
@@ -123,20 +120,29 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            // 3. Пытаемся запустить через стандартный метод. Если плагины загружены успешно, 
-            // он автоматически перехватит потоки AAC и плейлисты .m3u8
+            streamHandle = 0
+
+            // Попытка 1: Сначала пробуем запустить стандартным движком BASS
             streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
             
-            // 4. Если стандартный метод вернул 0 (не справился с HLS), запускаем обработчик напрямую
+            // Попытка 2: Если вернулся 0 (это HLS или сложный плейлист), запускаем обработчик HLS
             if (streamHandle == 0) {
                 try {
                     streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
                 } catch (e: Throwable) { 
-                    // ВАЖНО: Мы ловим Throwable, чтобы перехватить LinkageError (включая UnsatisfiedLinkError)
+                    // Ловим Throwable, чтобы перехватить возможные LinkageError
                 }
             }
             
-            // Проверка на ошибку
+            // Попытка 3: Если все еще 0 (например, AAC потоки, требующие явного вызова)
+            if (streamHandle == 0) {
+                try {
+                    streamHandle = BASS_AAC.BASS_AAC_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
+                } catch (e: Throwable) {
+                }
+            }
+
+            // Проверка на ошибку, если ни один из методов не сработал
             if (streamHandle == 0) {
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")
