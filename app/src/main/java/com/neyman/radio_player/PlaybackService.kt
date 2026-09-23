@@ -37,25 +37,28 @@ class PlaybackService : Service() {
         val locale = resources.configuration.locales.get(0).language
         isTr = locale == "tr"
 
+        // 1. Предварительно загружаем нативные JNI-библиотеки в систему
+        // Это предотвращает UnsatisfiedLinkError при вызове методов из BASSHLS.java и BASS_AAC.java
+        try { System.loadLibrary("bass") } catch (e: Throwable) {}
+        try { System.loadLibrary("bassaac") } catch (e: Throwable) {}
+        try { System.loadLibrary("basshls") } catch (e: Throwable) {}
+
         BASS.BASS_Init(-1, 44100, 0)
         BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         
-        // Настройки из твоего Python файла
         BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
         BASS.BASS_SetConfig(14, 10000) // BASS_CONFIG_NET_READTIMEOUT
         BASS.BASS_SetConfig(18, 1)     // BASS_CONFIG_NET_PREBUF
 
         val nativeDir = applicationInfo.nativeLibraryDir
 
-        // 1. Обязательно загружаем декодер AAC (исправляет Код 10 для DalgaFM, Mydonose и ITV)
-        if (BASS.BASS_PluginLoad("libbassaac.so", 0) == 0) {
-            BASS.BASS_PluginLoad("$nativeDir/libbassaac.so", 0)
-        }
+        // 2. Надежная загрузка плагинов. Пробуем загрузить по полному пути, 
+        // а если не выйдет (вернет 0) - используем короткое имя для встроенного загрузчика Android.
+        var aacPlugin = BASS.BASS_PluginLoad("$nativeDir/libbassaac.so", 0)
+        if (aacPlugin == 0) aacPlugin = BASS.BASS_PluginLoad("bassaac", 0)
 
-        // 2. Загружаем обработчик HLS (.m3u8)
-        if (BASS.BASS_PluginLoad("libbasshls.so", 0) == 0) {
-            BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
-        }
+        var hlsPlugin = BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
+        if (hlsPlugin == 0) hlsPlugin = BASS.BASS_PluginLoad("basshls", 0)
 
         setupMediaSession()
     }
@@ -120,14 +123,17 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            // Сначала пробуем запустить стандартным движком BASS
+            // 3. Пытаемся запустить через стандартный метод. Если плагины загружены успешно, 
+            // он автоматически перехватит потоки AAC и плейлисты .m3u8
             streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
             
-            // Если вернулся 0 (это HLS или сложный плейлист), запускаем BASSHLS
+            // 4. Если стандартный метод вернул 0 (не справился с HLS), запускаем обработчик напрямую
             if (streamHandle == 0) {
                 try {
                     streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
-                } catch (e: Exception) { }
+                } catch (e: Throwable) { 
+                    // ВАЖНО: Мы ловим Throwable, чтобы перехватить LinkageError (включая UnsatisfiedLinkError)
+                }
             }
             
             // Проверка на ошибку
