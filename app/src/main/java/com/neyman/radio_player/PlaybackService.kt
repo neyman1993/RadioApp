@@ -41,7 +41,7 @@ class PlaybackService : Service() {
         // 1. Предварительно загружаем нативные JNI-библиотеки в систему
         // Это предотвращает UnsatisfiedLinkError при вызове методов из BASSHLS и BASS_AAC
         try { System.loadLibrary("bass") } catch (e: Throwable) {}
-        try { System.loadLibrary("bassaac") } catch (e: Throwable) {}
+        try { System.loadLibrary("bass_aac") } catch (e: Throwable) {}
         try { System.loadLibrary("basshls") } catch (e: Throwable) {}
 
         BASS.BASS_Init(-1, 44100, 0)
@@ -54,7 +54,7 @@ class PlaybackService : Service() {
         val nativeDir = applicationInfo.nativeLibraryDir
 
         // 2. Загружаем плагины по абсолютному пути (работает благодаря extractNativeLibs="true")
-        BASS.BASS_PluginLoad("$nativeDir/libbassaac.so", 0)
+        BASS.BASS_PluginLoad("$nativeDir/libbass_aac.so", 0)
         BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
 
         setupMediaSession()
