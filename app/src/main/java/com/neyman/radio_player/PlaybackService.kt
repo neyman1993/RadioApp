@@ -15,13 +15,29 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import com.un4seen.bass.BASS
 import com.un4seen.bass.BASSHLS
-import com.un4seen.bass.BASS_AAC
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.net.URL
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
+import java.util.concurrent.Executors
 import java.util.regex.Pattern
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 class PlaybackService : Service() {
 
@@ -33,31 +49,255 @@ class PlaybackService : Service() {
     private var isTr = false
     private var metadataTimer: Timer? = null
 
+    // Локальный прокси для обхода BASS_ERROR_SSL (Код 10) на всех https:// и HLS потоках
+    private var proxyServerSocket: ServerSocket? = null
+    private var proxyPort: Int = 0
+    private val proxyExecutor = Executors.newCachedThreadPool()
+    private var trustAllSslFactory: SSLSocketFactory? = null
+
     override fun onCreate() {
         super.onCreate()
         val locale = resources.configuration.locales.get(0).language
         isTr = locale == "tr"
 
-        // 1. Предварительно загружаем нативные JNI-библиотеки в систему
-        // Это предотвращает UnsatisfiedLinkError при вызове методов из BASSHLS и BASS_AAC
-        try { System.loadLibrary("bass") } catch (e: Throwable) {}
-        try { System.loadLibrary("bass_aac") } catch (e: Throwable) {}
-        try { System.loadLibrary("basshls") } catch (e: Throwable) {}
+        initSslTrust()
+        startLocalHttpsProxy()
 
         BASS.BASS_Init(-1, 44100, 0)
         BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        
         BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
         BASS.BASS_SetConfig(14, 10000) // BASS_CONFIG_NET_READTIMEOUT
         BASS.BASS_SetConfig(18, 1)     // BASS_CONFIG_NET_PREBUF
+        BASS.BASS_SetConfig(21, 1)     // BASS_CONFIG_NET_PLAYLIST
 
         val nativeDir = applicationInfo.nativeLibraryDir
-
-        // 2. Загружаем плагины по абсолютному пути (работает благодаря extractNativeLibs="true")
-        BASS.BASS_PluginLoad("$nativeDir/libbass_aac.so", 0)
-        BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
+        if (BASS.BASS_PluginLoad("libbasshls.so", 0) == 0) {
+            BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
+        }
 
         setupMediaSession()
+    }
+
+    // Аналог verify=False из Python, чтобы открывались станции с любыми SSL-сертификатами
+    private fun initSslTrust() {
+        try {
+            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+            })
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(null, trustAllCerts, SecureRandom())
+            trustAllSslFactory = sslContext.socketFactory
+        } catch (e: Exception) { }
+    }
+
+    private fun startLocalHttpsProxy() {
+        try {
+            val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
+            proxyServerSocket = server
+            proxyPort = server.localPort
+            proxyExecutor.execute {
+                while (!server.isClosed) {
+                    try {
+                        val client = server.accept()
+                        proxyExecutor.execute { handleProxyClient(client) }
+                    } catch (e: Exception) {
+                        if (server.isClosed) break
+                    }
+                }
+            }
+        } catch (e: Exception) { }
+    }
+
+    private fun buildProxyUrl(targetUrl: String): String {
+        if (proxyPort == 0) return targetUrl
+        val cleanPath = targetUrl.substringBefore("?").substringAfterLast("/").ifEmpty { "stream" }
+        val safeName = cleanPath.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val encoded = URLEncoder.encode(targetUrl, "UTF-8")
+        return "http://127.0.0.1:$proxyPort/proxy/$safeName?url=$encoded"
+    }
+
+    private fun resolveRelativeUrl(baseUrl: String, refUrl: String): String {
+        val trimmed = refUrl.trim()
+        if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            return trimmed
+        }
+        return try {
+            val parsedBase = URL(baseUrl)
+            val protocol = parsedBase.protocol
+            val authority = parsedBase.authority
+            when {
+                trimmed.startsWith("//") -> "$protocol:$trimmed"
+                trimmed.startsWith("/") -> "$protocol://$authority$trimmed"
+                else -> {
+                    val basePath = parsedBase.path.ifEmpty { "/" }
+                    val baseDir = basePath.substringBeforeLast("/", "") + "/"
+                    val cleanRef = if (trimmed.startsWith("./")) trimmed.removePrefix("./") else trimmed
+                    "$protocol://$authority$baseDir$cleanRef"
+                }
+            }
+        } catch (e: Exception) {
+            trimmed
+        }
+    }
+
+    private fun openUpstreamConnection(startUrl: String, wantIcyMeta: Boolean, rangeHeader: String?): Pair<HttpURLConnection, String> {
+        var currentTarget = startUrl
+        for (redirectCount in 0..5) {
+            val urlObj = URL(currentTarget)
+            val conn = (urlObj.openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = 10000
+                readTimeout = 10000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                setRequestProperty("Accept", "*/*")
+                setRequestProperty("Connection", "close")
+                if (wantIcyMeta) {
+                    setRequestProperty("Icy-MetaData", "1")
+                }
+                if (rangeHeader != null) {
+                    setRequestProperty("Range", rangeHeader)
+                }
+                if (this is HttpsURLConnection) {
+                    trustAllSslFactory?.let { this.sslSocketFactory = it }
+                    this.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
+                }
+            }
+            val code = conn.responseCode
+            if (code in listOf(301, 302, 303, 307, 308)) {
+                val loc = conn.getHeaderField("Location")
+                conn.disconnect()
+                if (!loc.isNullOrEmpty()) {
+                    currentTarget = resolveRelativeUrl(currentTarget, loc)
+                    continue
+                }
+            }
+            return Pair(conn, currentTarget)
+        }
+        throw IllegalStateException("Too many redirects")
+    }
+
+    private fun handleProxyClient(clientSocket: Socket) {
+        var conn: HttpURLConnection? = null
+        try {
+            clientSocket.soTimeout = 15000
+            val reader = BufferedReader(InputStreamReader(clientSocket.getInputStream(), Charsets.US_ASCII))
+            val requestLine = reader.readLine() ?: return
+            val parts = requestLine.split(" ")
+            if (parts.size < 2) return
+            val requestUri = parts[1]
+
+            var wantIcy = false
+            var rangeHeader: String? = null
+            while (true) {
+                val hLine = reader.readLine() ?: break
+                if (hLine.isEmpty()) break
+                if (hLine.startsWith("Icy-MetaData:", ignoreCase = true) && hLine.contains("1")) {
+                    wantIcy = true
+                } else if (hLine.startsWith("Range:", ignoreCase = true)) {
+                    rangeHeader = hLine.substringAfter(":").trim()
+                }
+            }
+
+            val encodedUrl = requestUri.substringAfter("url=", "").substringBefore("&")
+            if (encodedUrl.isEmpty()) return
+            val targetUrl = URLDecoder.decode(encodedUrl, "UTF-8")
+
+            val isLikelyHls = targetUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true)
+            val (upstreamConn, finalUrl) = openUpstreamConnection(targetUrl, wantIcy && !isLikelyHls, rangeHeader)
+            conn = upstreamConn
+
+            val responseCode = conn.responseCode
+            val contentType = conn.contentType ?: "application/octet-stream"
+            val rawIn = BufferedInputStream(conn.inputStream, 8192)
+
+            // Проверяем первые 7 байт на сигнатуру #EXTM3U (для HLS и m3u плейлистов)
+            rawIn.mark(16)
+            val peekBuf = ByteArray(7)
+            var peekRead = 0
+            while (peekRead < 7) {
+                val r = rawIn.read(peekBuf, peekRead, 7 - peekRead)
+                if (r <= 0) break
+                peekRead += r
+            }
+            rawIn.reset()
+
+            val startsWithExtM3u = peekRead == 7 && String(peekBuf, Charsets.UTF_8) == "#EXTM3U"
+            val isM3u8Content = startsWithExtM3u ||
+                    finalUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true) ||
+                    contentType.contains("mpegurl", ignoreCase = true)
+
+            val outStream = clientSocket.getOutputStream()
+
+            if (isM3u8Content) {
+                val playlistText = rawIn.bufferedReader(Charsets.UTF_8).readText()
+                val uriAttrRegex = Regex("""URI="([^"]+)"""")
+                val rewrittenLines = ArrayList<String>()
+
+                for (rawLine in playlistText.lines()) {
+                    val line = rawLine.trim()
+                    if (line.isEmpty()) {
+                        rewrittenLines.add("")
+                    } else if (line.startsWith("#")) {
+                        val rewrittenTag = uriAttrRegex.replace(line) { matchResult ->
+                            val rawUri = matchResult.groupValues[1]
+                            val resolved = resolveRelativeUrl(finalUrl, rawUri)
+                            "URI=\"${buildProxyUrl(resolved)}\""
+                        }
+                        rewrittenLines.add(rewrittenTag)
+                    } else {
+                        val resolved = resolveRelativeUrl(finalUrl, line)
+                        rewrittenLines.add(buildProxyUrl(resolved))
+                    }
+                }
+
+                val bodyBytes = rewrittenLines.joinToString("\n").toByteArray(Charsets.UTF_8)
+                val headers = StringBuilder()
+                headers.append("HTTP/1.0 200 OK\r\n")
+                headers.append("Content-Type: application/vnd.apple.mpegurl\r\n")
+                headers.append("Content-Length: ${bodyBytes.size}\r\n")
+                headers.append("Connection: close\r\n\r\n")
+                outStream.write(headers.toString().toByteArray(Charsets.US_ASCII))
+                outStream.write(bodyBytes)
+                outStream.flush()
+            } else {
+                val statusLine = if (responseCode == 206) "HTTP/1.0 206 Partial Content\r\n" else "HTTP/1.0 200 OK\r\n"
+                val headers = StringBuilder(statusLine)
+                headers.append("Content-Type: $contentType\r\n")
+
+                val contentLen = conn.getHeaderField("Content-Length")
+                if (!contentLen.isNullOrEmpty()) {
+                    headers.append("Content-Length: $contentLen\r\n")
+                }
+                val contentRange = conn.getHeaderField("Content-Range")
+                if (!contentRange.isNullOrEmpty()) {
+                    headers.append("Content-Range: $contentRange\r\n")
+                }
+
+                // Пробрасываем ICY-заголовки для работы метаданных в BASS
+                for ((k, vList) in conn.headerFields) {
+                    if (k != null && k.startsWith("icy-", ignoreCase = true) && !vList.isNullOrEmpty()) {
+                        headers.append("$k: ${vList[0]}\r\n")
+                    }
+                }
+                headers.append("Connection: close\r\n\r\n")
+                outStream.write(headers.toString().toByteArray(Charsets.US_ASCII))
+                outStream.flush()
+
+                val buf = ByteArray(8192)
+                while (true) {
+                    val read = rawIn.read(buf)
+                    if (read == -1) break
+                    outStream.write(buf, 0, read)
+                }
+                outStream.flush()
+            }
+        } catch (e: Exception) {
+        } finally {
+            try { conn?.disconnect() } catch (e: Exception) {}
+            try { clientSocket.close() } catch (e: Exception) {}
+        }
     }
 
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
@@ -114,35 +354,34 @@ class PlaybackService : Service() {
         Thread {
             if (streamHandle != 0) {
                 BASS.BASS_StreamFree(streamHandle)
+                streamHandle = 0
             }
 
             val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            streamHandle = 0
+            val playUrl = buildProxyUrl(currentUrl)
+            val flags = BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS
 
-            // Попытка 1: Сначала пробуем запустить стандартным движком BASS
-            streamHandle = BASS.BASS_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
-            
-            // Попытка 2: Если вернулся 0 (это HLS или сложный плейлист), запускаем обработчик HLS
-            if (streamHandle == 0) {
+            // Если ссылка содержит .m3u8, сразу запускаем через BASSHLS
+            if (currentUrl.contains(".m3u8", ignoreCase = true)) {
                 try {
-                    streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(currentUrl, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
-                } catch (e: Throwable) { 
-                    // Ловим Throwable, чтобы перехватить возможные LinkageError
+                    streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(playUrl, flags, null, null)
+                } catch (e: Exception) { }
+                if (streamHandle == 0) {
+                    streamHandle = BASS.BASS_StreamCreateURL(playUrl, 0, flags, null, null)
+                }
+            } else {
+                // Сначала пробуем стандартный BASS, а если поток оказался скрытым HLS — через BASSHLS
+                streamHandle = BASS.BASS_StreamCreateURL(playUrl, 0, flags, null, null)
+                if (streamHandle == 0) {
+                    try {
+                        streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(playUrl, flags, null, null)
+                    } catch (e: Exception) { }
                 }
             }
             
-            // Попытка 3: Если все еще 0 (например, AAC потоки, требующие явного вызова)
-            if (streamHandle == 0) {
-                try {
-                    streamHandle = BASS_AAC.BASS_AAC_StreamCreateURL(currentUrl, 0, BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS, null, null)
-                } catch (e: Throwable) {
-                }
-            }
-
-            // Проверка на ошибку, если ни один из методов не сработал
             if (streamHandle == 0) {
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")
@@ -338,6 +577,8 @@ class PlaybackService : Service() {
 
     override fun onDestroy() {
         metadataTimer?.cancel()
+        try { proxyServerSocket?.close() } catch (e: Exception) {}
+        proxyExecutor.shutdownNow()
         if (streamHandle != 0) {
             BASS.BASS_StreamFree(streamHandle)
         }
