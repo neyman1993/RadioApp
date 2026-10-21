@@ -1,4 +1,4 @@
-package com.neyman.radio_player
+﻿package com.neyman.radio_player
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -73,6 +73,9 @@ class PlaybackService : Service() {
         val nativeDir = applicationInfo.nativeLibraryDir
         if (BASS.BASS_PluginLoad("libbasshls.so", 0) == 0) {
             BASS.BASS_PluginLoad("$nativeDir/libbasshls.so", 0)
+        }
+        if (BASS.BASS_PluginLoad("libbass_aac.so", 0) == 0) {
+            BASS.BASS_PluginLoad("$nativeDir/libbass_aac.so", 0)
         }
 
         setupMediaSession()
@@ -348,6 +351,28 @@ class PlaybackService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun resolveStreamUrl(url: String): String {
+        try {
+            val lowerUrl = url.lowercase()
+            // If URL points to a .pls or .m3u playlist, extract the actual stream URL
+            if (lowerUrl.endsWith(".pls") || lowerUrl.contains(".pls?")) {
+                val (conn, _) = openUpstreamConnection(url, false, null)
+                val text = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                val match = Regex("File\\d+=(.+)", RegexOption.IGNORE_CASE).find(text)
+                if (match != null) return match.groupValues[1].trim()
+            } else if ((lowerUrl.endsWith(".m3u") || lowerUrl.contains(".m3u?")) && !lowerUrl.endsWith(".m3u8")) {
+                val (conn, _) = openUpstreamConnection(url, false, null)
+                val text = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                for (line in text.lines()) {
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) return trimmed
+                }
+            }
+        } catch (e: Exception) { }
+        return url
+    }
     private fun startBassPlayback() {
         metadataTimer?.cancel()
 
@@ -361,11 +386,13 @@ class PlaybackService : Service() {
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
-            val playUrl = buildProxyUrl(currentUrl)
+            // Resolve .pls/.m3u playlists to get the actual stream URL
+            val resolvedUrl = resolveStreamUrl(currentUrl)
+            val playUrl = buildProxyUrl(resolvedUrl)
             val flags = BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS
 
             // Если ссылка содержит .m3u8, сразу запускаем через BASSHLS
-            if (currentUrl.contains(".m3u8", ignoreCase = true)) {
+            if (resolvedUrl.contains(".m3u8", ignoreCase = true)) {
                 try {
                     streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(playUrl, flags, null, null)
                 } catch (e: Exception) { }

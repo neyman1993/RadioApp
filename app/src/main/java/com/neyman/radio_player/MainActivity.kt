@@ -1,4 +1,4 @@
-package com.neyman.radio_player
+﻿package com.neyman.radio_player
 
 import android.Manifest
 import android.app.AlertDialog
@@ -15,6 +15,8 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
+import android.text.Editable
+import android.text.TextWatcher
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -53,6 +55,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPlayPause: Button
     private lateinit var miniPlayerLayout: LinearLayout
     private lateinit var folderDisplay: TextView
+    private lateinit var countrySearchEdit: EditText
+    private lateinit var countrySearchLayout: LinearLayout
+    private var allCountries = ArrayList<String>()
 
     private var currentMode = "MAIN_MENU"
     private var preSettingsMode = "MAIN_MENU"
@@ -241,11 +246,11 @@ class MainActivity : AppCompatActivity() {
         }
         val btnParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 16, 0, 16) }
         
-        val btnSearchTab = Button(this).apply { text = getStr("Поиск", "Arama"); layoutParams = btnParams }
-        val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler"); layoutParams = btnParams }
-        val btnGenresTab = Button(this).apply { text = getStr("Жанры", "Türler"); layoutParams = btnParams }
-        val btnTopTab = Button(this).apply { text = getStr("Популярные", "Popüler"); layoutParams = btnParams }
-        val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); layoutParams = btnParams }
+        val btnSearchTab = Button(this).apply { text = getStr("Поиск", "Arama"); isAllCaps = false; layoutParams = btnParams }
+        val btnCountriesTab = Button(this).apply { text = getStr("Страны", "Ülkeler"); isAllCaps = false; layoutParams = btnParams }
+        val btnGenresTab = Button(this).apply { text = getStr("Жанры", "Türler"); isAllCaps = false; layoutParams = btnParams }
+        val btnTopTab = Button(this).apply { text = getStr("Популярные", "Popüler"); isAllCaps = false; layoutParams = btnParams }
+        val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); isAllCaps = false; layoutParams = btnParams }
         
         navLayout.addView(btnSearchTab)
         navLayout.addView(btnCountriesTab)
@@ -309,14 +314,32 @@ class MainActivity : AppCompatActivity() {
         }
         
         val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); setOnClickListener { playPrev() } }
-        btnPlayPause = Button(this).apply { text = getStr("Воспроизвести", "Oynat"); setOnClickListener { togglePlayPause() } }
-        val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); setOnClickListener { playNext() } }
+        val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); isAllCaps = false; setOnClickListener { playPrev() } }
+        btnPlayPause = Button(this).apply { text = getStr("Воспроизвести", "Oynat"); isAllCaps = false; setOnClickListener { togglePlayPause() } }
+        val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); isAllCaps = false; setOnClickListener { playNext() } }
         
         controlsLayout.addView(btnPrevBtn); controlsLayout.addView(btnPlayPause); controlsLayout.addView(btnNextBtn)
         miniPlayerLayout.addView(stationNameText); miniPlayerLayout.addView(controlsLayout)
 
         mainLayout.addView(navLayout)
+        countrySearchLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(16, 8, 16, 8)
+        }
+        countrySearchEdit = EditText(this).apply {
+            hint = getStr("Поиск страны...", "Ülke ara...")
+            setSingleLine(true)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    filterCountries(s?.toString() ?: "")
+                }
+            })
+        }
+        countrySearchLayout.addView(countrySearchEdit)
+        mainLayout.addView(countrySearchLayout)
         mainLayout.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         mainLayout.addView(settingsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         mainLayout.addView(miniPlayerLayout)
@@ -327,7 +350,7 @@ class MainActivity : AppCompatActivity() {
         btnSearchTab.setOnClickListener { showSearchDialog() }
         btnCountriesTab.setOnClickListener { 
             currentMode = "COUNTRIES"; updateUIForMode()
-            if (countries.isEmpty()) loadCountries() else { updateList(countries); listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
+            if (countries.isEmpty()) loadCountries() else { countrySearchEdit.setText(""); updateList(allCountries); countries.clear(); countries.addAll(allCountries); listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi")) }
         }
         btnGenresTab.setOnClickListener {
             currentMode = "GENRES"; updateUIForMode()
@@ -368,6 +391,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUIForMode() {
+        countrySearchLayout.visibility = View.GONE
         when (currentMode) {
             "MAIN_MENU" -> { 
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
@@ -383,7 +407,7 @@ class MainActivity : AppCompatActivity() {
             }
             "COUNTRIES" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-                miniPlayerLayout.visibility = View.VISIBLE
+                miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Страны", "Ülkeler") 
             }
@@ -791,8 +815,9 @@ class MainActivity : AppCompatActivity() {
                 val res = fetchJsonWithFallback("countries")
                 countries.clear()
                 for (i in 0 until res.length()) { val o = res.getJSONObject(i); if (o.optInt("stationcount") > 0) countries.add(o.optString("name") + " (" + o.optInt("stationcount") + ")") }
-                countries.sort(); 
+                countries.sort(); allCountries.clear(); allCountries.addAll(countries)
                 runOnUiThread { 
+                    countrySearchEdit.setText("")
                     updateList(countries) 
                     listView.announceForAccessibility(getStr("Загружено ${countries.size} стран", "${countries.size} ülke yüklendi"))
                 }
@@ -838,6 +863,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun filterCountries(query: String) {
+        if (query.isEmpty()) {
+            countries.clear()
+            countries.addAll(allCountries)
+            updateList(countries)
+        } else {
+            val lowerQuery = query.lowercase(Locale.getDefault())
+            val filtered = allCountries.filter { it.lowercase(Locale.getDefault()).contains(lowerQuery) }
+            countries.clear()
+            countries.addAll(filtered)
+            updateList(countries)
+        }
+    }
     private fun loadStationsByCountry(country: String) {
         currentCountryName = country
         currentMode = "STATIONS_OF_COUNTRY"

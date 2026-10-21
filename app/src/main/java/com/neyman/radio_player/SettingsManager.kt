@@ -2,6 +2,7 @@ package com.neyman.radio_player
 
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
 
 class SettingsManager(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
@@ -41,21 +42,45 @@ class SettingsManager(context: Context) {
     }
 
     fun saveFavorites(favorites: List<Station>) {
-        val favStrings = favorites.map { "${it.name}|${it.url}|${it.country}" }.toSet()
-        prefs.edit().putStringSet("favorites_set", favStrings).apply()
+        // Use JSON for reliable storage (StringSet can lose data on app updates)
+        val arr = JSONArray()
+        for (station in favorites) {
+            arr.put(station.toJson())
+        }
+        prefs.edit().putString("favorites_json", arr.toString()).apply()
     }
 
     fun loadFavorites(): ArrayList<Station> {
-        val favSet = prefs.getStringSet("favorites_set", setOf()) ?: setOf()
         val favList = ArrayList<Station>()
-        for (str in favSet) {
-            val parts = str.split("|")
-            if (parts.size >= 3) {
-                favList.add(Station(parts[0], parts[1], parts[2]))
-            } else if (parts.size >= 2) {
-                favList.add(Station(parts[0], parts[1], ""))
-            }
+        
+        // Try loading from new JSON format first
+        val jsonStr = prefs.getString("favorites_json", null)
+        if (jsonStr != null) {
+            try {
+                val arr = JSONArray(jsonStr)
+                for (i in 0 until arr.length()) {
+                    favList.add(Station.fromJson(arr.getJSONObject(i)))
+                }
+                return favList
+            } catch (e: Exception) { }
         }
+        
+        // Fallback: migrate from old StringSet format
+        val favSet = prefs.getStringSet("favorites_set", null)
+        if (favSet != null && favSet.isNotEmpty()) {
+            for (str in favSet) {
+                val parts = str.split("|")
+                if (parts.size >= 3) {
+                    favList.add(Station(parts[0], parts[1], parts[2]))
+                } else if (parts.size >= 2) {
+                    favList.add(Station(parts[0], parts[1], ""))
+                }
+            }
+            // Migrate to new format and clean up old one
+            saveFavorites(favList)
+            prefs.edit().remove("favorites_set").apply()
+        }
+        
         return favList
     }
 
