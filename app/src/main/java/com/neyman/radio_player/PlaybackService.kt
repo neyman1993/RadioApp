@@ -1,4 +1,4 @@
-﻿package com.neyman.radio_player
+package com.neyman.radio_player
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -64,7 +64,7 @@ class PlaybackService : Service() {
         startLocalHttpsProxy()
 
         BASS.BASS_Init(-1, 44100, 0)
-        BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        BASS.BASS_SetConfigPtr(BASS.BASS_CONFIG_NET_AGENT, "VLC/3.0.18 LibVLC/3.0.18 (compatible; RadioPlayer/1.0)")
         BASS.BASS_SetConfig(11, 10000) // BASS_CONFIG_NET_TIMEOUT
         BASS.BASS_SetConfig(14, 10000) // BASS_CONFIG_NET_READTIMEOUT
         BASS.BASS_SetConfig(18, 1)     // BASS_CONFIG_NET_PREBUF
@@ -147,13 +147,14 @@ class PlaybackService : Service() {
 
     private fun openUpstreamConnection(startUrl: String, wantIcyMeta: Boolean, rangeHeader: String?): Pair<HttpURLConnection, String> {
         var currentTarget = startUrl
+        var userAgent = "VLC/3.0.18 LibVLC/3.0.18 (compatible; RadioPlayer/1.0)"
         for (redirectCount in 0..5) {
             val urlObj = URL(currentTarget)
             val conn = (urlObj.openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
                 connectTimeout = 10000
                 readTimeout = 10000
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                setRequestProperty("User-Agent", userAgent)
                 setRequestProperty("Accept", "*/*")
                 setRequestProperty("Connection", "close")
                 if (wantIcyMeta) {
@@ -172,10 +173,31 @@ class PlaybackService : Service() {
                 val loc = conn.getHeaderField("Location")
                 conn.disconnect()
                 if (!loc.isNullOrEmpty()) {
+                    // Shoutcast web-redirect trap detection (redirecting browser to index.html)
+                    if (loc.contains(".html", ignoreCase = true) || loc.contains("index.", ignoreCase = true)) {
+                        val cleanBase = currentTarget.substringBefore("?")
+                        currentTarget = if (cleanBase.endsWith("/")) "$cleanBase;" else "$cleanBase/;"
+                        continue
+                    }
                     currentTarget = resolveRelativeUrl(currentTarget, loc)
                     continue
                 }
             }
+
+            val cType = conn.contentType ?: ""
+            if (cType.startsWith("text/html", ignoreCase = true) && !currentTarget.endsWith(";") && !currentTarget.endsWith("/;")) {
+                conn.disconnect()
+                val cleanBase = currentTarget.substringBefore("?")
+                currentTarget = if (cleanBase.endsWith("/")) "$cleanBase;" else "$cleanBase/;"
+                continue
+            }
+
+            if (code == 403 && userAgent.startsWith("VLC")) {
+                conn.disconnect()
+                userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                continue
+            }
+
             return Pair(conn, currentTarget)
         }
         throw IllegalStateException("Too many redirects")
@@ -391,24 +413,44 @@ class PlaybackService : Service() {
             val playUrl = buildProxyUrl(resolvedUrl)
             val flags = BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS
 
-            // Если ссылка содержит .m3u8, сразу запускаем через BASSHLS
-            if (resolvedUrl.contains(".m3u8", ignoreCase = true)) {
-                try {
-                    streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(playUrl, flags, null, null)
-                } catch (e: Exception) { }
-                if (streamHandle == 0) {
-                    streamHandle = BASS.BASS_StreamCreateURL(playUrl, 0, flags, null, null)
-                }
-            } else {
-                // Сначала пробуем стандартный BASS, а если поток оказался скрытым HLS — через BASSHLS
-                streamHandle = BASS.BASS_StreamCreateURL(playUrl, 0, flags, null, null)
-                if (streamHandle == 0) {
+            fun tryCreateStream(urlToTry: String): Int {
+                var handle = 0
+                if (urlToTry.contains(".m3u8", ignoreCase = true)) {
                     try {
-                        streamHandle = BASSHLS.BASS_HLS_StreamCreateURL(playUrl, flags, null, null)
+                        handle = BASSHLS.BASS_HLS_StreamCreateURL(urlToTry, flags, null, null)
                     } catch (e: Exception) { }
+                    if (handle == 0) {
+                        handle = BASS.BASS_StreamCreateURL(urlToTry, 0, flags, null, null)
+                    }
+                } else {
+                    handle = BASS.BASS_StreamCreateURL(urlToTry, 0, flags, null, null)
+                    if (handle == 0) {
+                        try {
+                            handle = BASSHLS.BASS_HLS_StreamCreateURL(urlToTry, flags, null, null)
+                        } catch (e: Exception) { }
+                    }
+                }
+                return handle
+            }
+
+            // 1. Try through local proxy
+            streamHandle = tryCreateStream(playUrl)
+
+            // 2. Fallback: try direct URL without proxy if proxy failed
+            if (streamHandle == 0 && playUrl != resolvedUrl) {
+                streamHandle = tryCreateStream(resolvedUrl)
+            }
+
+            // 3. Fallback: try shoutcast semicolon URL format if not already ending in ;
+            if (streamHandle == 0 && !resolvedUrl.endsWith(";") && !resolvedUrl.endsWith("/;")) {
+                val scUrl = if (resolvedUrl.endsWith("/")) "$resolvedUrl;" else "$resolvedUrl/;"
+                val scProxyUrl = buildProxyUrl(scUrl)
+                streamHandle = tryCreateStream(scProxyUrl)
+                if (streamHandle == 0) {
+                    streamHandle = tryCreateStream(scUrl)
                 }
             }
-            
+
             if (streamHandle == 0) {
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")

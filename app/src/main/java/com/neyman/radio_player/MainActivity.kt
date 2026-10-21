@@ -1,4 +1,4 @@
-﻿package com.neyman.radio_player
+package com.neyman.radio_player
 
 import android.Manifest
 import android.app.AlertDialog
@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var countrySearchEdit: EditText
     private lateinit var countrySearchLayout: LinearLayout
     private var allCountries = ArrayList<String>()
+    private var allLoadedStations = ArrayList<Station>()
 
     private var currentMode = "MAIN_MENU"
     private var preSettingsMode = "MAIN_MENU"
@@ -334,7 +335,11 @@ class MainActivity : AppCompatActivity() {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
-                    filterCountries(s?.toString() ?: "")
+                    val q = s?.toString() ?: ""
+                    when (currentMode) {
+                        "COUNTRIES" -> filterCountries(q)
+                        "STATIONS_OF_COUNTRY" -> filterStations(q)
+                    }
                 }
             })
         }
@@ -408,6 +413,7 @@ class MainActivity : AppCompatActivity() {
             "COUNTRIES" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
+                countrySearchEdit.hint = getStr("Поиск страны...", "Ülke ara...")
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Страны", "Ülkeler") 
             }
@@ -419,7 +425,8 @@ class MainActivity : AppCompatActivity() {
             }
             "STATIONS_OF_COUNTRY" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
-                miniPlayerLayout.visibility = View.VISIBLE
+                miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
+                countrySearchEdit.hint = getStr("Поиск станции...", "İstasyon ara...")
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = currentCountryName 
             }
@@ -474,7 +481,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onBackPressed() {
         when (currentMode) {
-            "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; updateUIForMode(); updateList(countries) }
+            "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; countrySearchEdit.setText(""); updateUIForMode(); countries.clear(); countries.addAll(allCountries); updateList(countries) }
             "STATIONS_OF_GENRE" -> { currentMode = "GENRES"; updateUIForMode(); updateList(genres) }
             "COUNTRIES", "GENRES", "TOP_STATIONS", "FAVORITES", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
             "SETTINGS" -> { currentMode = preSettingsMode; updateUIForMode() }
@@ -800,9 +807,14 @@ class MainActivity : AppCompatActivity() {
                     if (url.isNotEmpty()) stations.add(Station.fromJson(o))
                 }
                 stations.sortBy { it.name.lowercase(Locale.getDefault()) }
+                allLoadedStations.clear()
+                allLoadedStations.addAll(stations)
                 runOnUiThread { 
+                    if (currentMode == "STATIONS_OF_COUNTRY") {
+                        countrySearchEdit.setText("")
+                    }
                     updateList(stations.map { it.name }) 
-                    listView.announceForAccessibility(getStr("Загружено ${stations.size} станций", "${stations.size} istasyon yüklendi"))
+                    listView.announceForAccessibility(getStr("Загружено $ станций", "$ istasyon yüklendi"))
                 }
             } catch (e: Exception) {}
         }
@@ -876,9 +888,24 @@ class MainActivity : AppCompatActivity() {
             updateList(countries)
         }
     }
+    private fun filterStations(query: String) {
+        if (query.isEmpty()) {
+            stations.clear()
+            stations.addAll(allLoadedStations)
+            updateList(stations.map { it.name })
+        } else {
+            val lowerQuery = query.lowercase(Locale.getDefault())
+            val filtered = allLoadedStations.filter { it.name.lowercase(Locale.getDefault()).contains(lowerQuery) }
+            stations.clear()
+            stations.addAll(filtered)
+            updateList(stations.map { it.name })
+        }
+    }
+
     private fun loadStationsByCountry(country: String) {
         currentCountryName = country
         currentMode = "STATIONS_OF_COUNTRY"
+        runOnUiThread { countrySearchEdit.setText("") }
         updateUIForMode()
         fetchStations("bycountry/" + URLEncoder.encode(country, "UTF-8"))
     }
