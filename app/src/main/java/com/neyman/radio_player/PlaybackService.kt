@@ -387,16 +387,11 @@ class PlaybackService : Service() {
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
-                val duckPref = sp.getString("audio_focus_ducking", "duck") ?: "duck"
-                if (duckPref == "duck") {
+                val focusEnabled = sp.getBoolean("audio_focus_enabled", false)
+                if (focusEnabled) {
                     isDucked = true
                     if (streamHandle != 0) {
                         BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0.2f)
-                    }
-                } else {
-                    if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
-                        pausedByFocus = true
-                        pausePlayback()
                     }
                 }
             }
@@ -443,7 +438,7 @@ class PlaybackService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
-                val pauseOnUnplug = sp.getBoolean("pause_on_unplug", true)
+                val pauseOnUnplug = sp.getBoolean("pause_on_unplug", false)
                 if (pauseOnUnplug) {
                     if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
                         pausePlayback()
@@ -501,7 +496,7 @@ class PlaybackService : Service() {
 
     private fun triggerReconnect(reason: String) {
         val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
-        val autoReconnect = sp.getBoolean("auto_reconnect", true)
+        val autoReconnect = sp.getBoolean("auto_reconnect", false)
         if (!autoReconnect || isReconnecting || currentUrl.isEmpty()) return
 
         if (reconnectAttempts >= maxReconnectAttempts) {

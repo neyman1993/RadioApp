@@ -697,8 +697,10 @@ class MainActivity : AppCompatActivity() {
         val showMenu = currentMode != "SETTINGS"
         for (i in 0 until menu.size()) { menu.getItem(i).isVisible = showMenu }
         if (showMenu) {
+            menu.findItem(3)?.isVisible = (currentMode == "CUSTOM_STATIONS")
+            menu.findItem(4)?.isVisible = (currentMode == "CUSTOM_STATIONS" || currentMode == "FAVORITES")
             menu.findItem(5)?.isVisible = settings.trackHistoryEnabled
-            menu.findItem(6)?.isVisible = currentMode == "RECENT_STATIONS"
+            menu.findItem(6)?.isVisible = (currentMode == "RECENT_STATIONS" && recentStations.isNotEmpty())
         }
         return super.onPrepareOptionsMenu(menu)
     }
@@ -792,16 +794,12 @@ class MainActivity : AppCompatActivity() {
         val dupSwitch = Switch(this).apply { isChecked = settings.hideDuplicates; setOnCheckedChangeListener { _, isCheckedVal -> settings.hideDuplicates = isCheckedVal } }
         layout.addView(dupSwitch)
 
-        addSettingItem(layout, getStr("Качество звука (Битрейт)", "Ses Kalitesi (Bitrate)"), arrayOf(getStr("По умолчанию (то что дает сервер)", "Varsayılan (sunucunun sağladığı)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"), arrayOf("0", "64", "128", "192", "320"), { settings.minBitrate.toString() }) { newBit ->
+        addSettingItem(layout, getStr("Качество записи", "Kayıt Kalitesi"), arrayOf(getStr("По умолчанию (то что дает сервер)", "Varsayılan (sunucunun sağladığı)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"), arrayOf("0", "64", "128", "192", "320"), { settings.minBitrate.toString() }) { newBit ->
             settings.minBitrate = newBit.toInt()
         }
 
         addSettingItem(layout, getStr("Буферизация (Защита от заиканий)", "Önbelleğe Alma (Saniye)"), arrayOf("3 " + getStr("сек", "sn"), "5 " + getStr("сек", "sn") + getStr(" (По умолчанию)", " (Varsayılan)"), "10 " + getStr("сек", "sn"), "20 " + getStr("сек", "sn")), arrayOf("3", "5", "10", "20"), { settings.bufferSeconds.toString() }) { newBuf ->
             settings.bufferSeconds = newBuf.toInt()
-        }
-
-        addSettingItem(layout, getStr("Формат записи", "Kayıt Formatı"), arrayOf("MP3", "AAC"), arrayOf(".mp3", ".aac"), { settings.recFormat }) { newFmt ->
-            settings.recFormat = newFmt
         }
 
         addHeader(getStr("Автопереподключение при обрыве сети", "Ağ kesildiğinde otomatik yeniden bağlan"))
@@ -811,15 +809,12 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(autoReconnectSwitch)
 
-        addSettingItem(
-            layout,
-            getStr("Поведение при уведомлениях и навигаторе", "Bildirim ve navigasyon sırasında ses"),
-            arrayOf(getStr("Приглушать радио (Ducking)", "Sesi kıs (Ducking)"), getStr("Ставить на паузу", "Duraklat")),
-            arrayOf("duck", "pause"),
-            { settings.audioFocusDucking }
-        ) { newFocus ->
-            settings.audioFocusDucking = newFocus
+        addHeader(getStr("Аудиофокус", "Ses Odağı"))
+        val audioFocusSwitch = Switch(this).apply {
+            isChecked = settings.audioFocusEnabled
+            setOnCheckedChangeListener { _, isCheckedVal -> settings.audioFocusEnabled = isCheckedVal }
         }
+        layout.addView(audioFocusSwitch)
 
         addHeader(getStr("Автопауза при отключении наушников", "Kulaklık çıkarıldığında otomatik duraklat"))
         val unplugSwitch = Switch(this).apply {
@@ -1675,26 +1670,8 @@ private fun showSearchDialog() {
             setSingleLine(true)
         }
 
-        val quickButtonsLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 16, 0, 8)
-        }
-        val btnTop = Button(this).apply {
-            text = getStr("В начало (№1)", "En başa (№1)")
-            isAllCaps = false
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        val btnBottom = Button(this).apply {
-            text = getStr("В конец (№$total)", "En sona (№$total)")
-            isAllCaps = false
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        quickButtonsLayout.addView(btnTop)
-        quickButtonsLayout.addView(btnBottom)
-
         layout.addView(infoText)
         layout.addView(posInput)
-        layout.addView(quickButtonsLayout)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle(getStr("Переместить станцию", "İstasyonu Taşı"))
@@ -1711,17 +1688,6 @@ private fun showSearchDialog() {
             }
             .setNegativeButton(getStr("Отмена", "İptal"), null)
             .create()
-
-        btnTop.setOnClickListener {
-            dialog.dismiss()
-            val curIdx = favorites.indexOfFirst { it.url == station.url }
-            if (curIdx != -1) moveFavorite(curIdx, 0)
-        }
-        btnBottom.setOnClickListener {
-            dialog.dismiss()
-            val curIdx = favorites.indexOfFirst { it.url == station.url }
-            if (curIdx != -1) moveFavorite(curIdx, total - 1)
-        }
 
         dialog.show()
     }

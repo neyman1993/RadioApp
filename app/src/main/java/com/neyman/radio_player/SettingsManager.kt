@@ -36,23 +36,23 @@ class SettingsManager(context: Context) {
         set(value) = prefs.edit().putBoolean("autoplay_at_start", value).apply()
 
     var autoReconnect: Boolean
-        get() = prefs.getBoolean("auto_reconnect", true)
+        get() = prefs.getBoolean("auto_reconnect", false)
         set(value) = prefs.edit().putBoolean("auto_reconnect", value).apply()
 
-    var audioFocusDucking: String
-        get() = prefs.getString("audio_focus_ducking", "duck") ?: "duck"
-        set(value) = prefs.edit().putString("audio_focus_ducking", value).apply()
+    var audioFocusEnabled: Boolean
+        get() = prefs.getBoolean("audio_focus_enabled", false)
+        set(value) = prefs.edit().putBoolean("audio_focus_enabled", value).apply()
 
     var pauseOnUnplug: Boolean
-        get() = prefs.getBoolean("pause_on_unplug", true)
+        get() = prefs.getBoolean("pause_on_unplug", false)
         set(value) = prefs.edit().putBoolean("pause_on_unplug", value).apply()
 
     var trackHistoryEnabled: Boolean
-        get() = prefs.getBoolean("track_history_enabled", true)
+        get() = prefs.getBoolean("track_history_enabled", false)
         set(value) = prefs.edit().putBoolean("track_history_enabled", value).apply()
 
     var stationHistoryEnabled: Boolean
-        get() = prefs.getBoolean("station_history_enabled", true)
+        get() = prefs.getBoolean("station_history_enabled", false)
         set(value) = prefs.edit().putBoolean("station_history_enabled", value).apply()
 
     fun getTheme(): String = prefs.getString("app_theme", "system") ?: "system"
