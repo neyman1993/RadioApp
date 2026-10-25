@@ -7,7 +7,18 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.IBinder
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -49,6 +60,29 @@ class PlaybackService : Service() {
     private var isTr = false
     private var metadataTimer: Timer? = null
 
+    // Audio Focus & Headphone unplug
+    private lateinit var audioManager: AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus = false
+    private var isDucked = false
+    private var pausedByFocus = false
+    private var isNoisyReceiverRegistered = false
+
+    // Auto-reconnect & Network tracking
+    private var reconnectAttempts = 0
+    private val maxReconnectAttempts = 5
+    private var isReconnecting = false
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private var consecutiveStallSeconds = 0
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    // Audio format info
+    private var currentCodec = ""
+    private var currentBitrate = 0
+    private var currentSampleRate = 0
+    private var currentChannels = 0
+
     // Локальный прокси для обхода BASS_ERROR_SSL (Код 10) на всех https:// и HLS потоках
     private var proxyServerSocket: ServerSocket? = null
     private var proxyPort: Int = 0
@@ -79,6 +113,8 @@ class PlaybackService : Service() {
         }
 
         setupMediaSession()
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        registerNetworkCallback()
     }
 
     // Аналог verify=False из Python, чтобы открывались станции с любыми SSL-сертификатами
@@ -325,6 +361,272 @@ class PlaybackService : Service() {
         }
     }
 
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (isDucked) {
+                    isDucked = false
+                    if (streamHandle != 0) {
+                        BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1.0f)
+                    }
+                } else if (pausedByFocus) {
+                    pausedByFocus = false
+                    resumePlayback()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                pausedByFocus = false
+                isDucked = false
+                pausePlayback()
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
+                    pausedByFocus = true
+                    pausePlayback()
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+                val duckPref = sp.getString("audio_focus_ducking", "duck") ?: "duck"
+                if (duckPref == "duck") {
+                    isDucked = true
+                    if (streamHandle != 0) {
+                        BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0.2f)
+                    }
+                } else {
+                    if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
+                        pausedByFocus = true
+                        pausePlayback()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        if (hasAudioFocus) return true
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAcceptsDelayedFocusGain(true)
+                .setOnAudioFocusChangeListener(audioFocusListener)
+                .build()
+            audioFocusRequest = req
+            audioManager.requestAudioFocus(req)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(audioFocusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+        }
+        hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        return hasAudioFocus
+    }
+
+    private fun abandonAudioFocus() {
+        if (!hasAudioFocus) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(audioFocusListener)
+        }
+        hasAudioFocus = false
+        isDucked = false
+        pausedByFocus = false
+    }
+
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+                val pauseOnUnplug = sp.getBoolean("pause_on_unplug", true)
+                if (pauseOnUnplug) {
+                    if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
+                        pausePlayback()
+                        sendLocalBroadcast(Intent("com.neyman.radio.UNPLUGGED"))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun registerNoisyReceiver() {
+        if (!isNoisyReceiverRegistered) {
+            try {
+                registerReceiver(noisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+                isNoisyReceiverRegistered = true
+            } catch (e: Exception) {}
+        }
+    }
+
+    private fun unregisterNoisyReceiver() {
+        if (isNoisyReceiverRegistered) {
+            try { unregisterReceiver(noisyReceiver) } catch (e: Exception) {}
+            isNoisyReceiverRegistered = false
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        try {
+            connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (isReconnecting || consecutiveStallSeconds > 0) {
+                        reconnectHandler.removeCallbacksAndMessages(null)
+                        isReconnecting = false
+                        reconnectAttempts = 0
+                        consecutiveStallSeconds = 0
+                        startBassPlayback()
+                    }
+                }
+            }
+            networkCallback?.let {
+                val req = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                connectivityManager?.registerNetworkCallback(req, it)
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun unregisterNetworkCallback() {
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        } catch (e: Exception) {}
+    }
+
+    private fun triggerReconnect(reason: String) {
+        val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+        val autoReconnect = sp.getBoolean("auto_reconnect", true)
+        if (!autoReconnect || isReconnecting || currentUrl.isEmpty()) return
+
+        if (reconnectAttempts >= maxReconnectAttempts) {
+            isReconnecting = false
+            reconnectAttempts = 0
+            val errIntent = Intent("com.neyman.radio.ERROR").apply {
+                putExtra("error_code", -99)
+            }
+            sendLocalBroadcast(errIntent)
+            showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка сети: не удалось переподключиться", "Ağ hatası: yeniden bağlanılamadı"), currentStationName)
+            return
+        }
+
+        isReconnecting = true
+        reconnectAttempts++
+        val delayMs = reconnectAttempts * 2000L
+
+        updateSessionState(PlaybackStateCompat.STATE_BUFFERING)
+        val statusText = getStr("Переподключение ($reconnectAttempts/$maxReconnectAttempts)...", "Yeniden bağlanıyor ($reconnectAttempts/$maxReconnectAttempts)...")
+        showNotification(PlaybackStateCompat.STATE_BUFFERING, statusText, currentStationName)
+
+        val reconnectIntent = Intent("com.neyman.radio.RECONNECTING").apply {
+            putExtra("attempt", reconnectAttempts)
+            putExtra("max", maxReconnectAttempts)
+        }
+        sendLocalBroadcast(reconnectIntent)
+
+        reconnectHandler.postDelayed({
+            isReconnecting = false
+            startBassPlayback()
+        }, delayMs)
+    }
+
+    private fun extractAndBroadcastAudioInfo() {
+        if (streamHandle == 0) return
+        val info = BASS.BASS_CHANNELINFO()
+        BASS.BASS_ChannelGetInfo(streamHandle, info)
+
+        var detectedBitrate = 0
+        val icyTags = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_ICY) as? Array<*>
+        if (icyTags != null) {
+            for (tag in icyTags) {
+                val line = tag?.toString() ?: ""
+                if (line.startsWith("icy-br:", ignoreCase = true) || line.startsWith("ice-bitrate:", ignoreCase = true)) {
+                    val brStr = line.substringAfter(":").trim().takeWhile { it.isDigit() }
+                    detectedBitrate = brStr.toIntOrNull() ?: 0
+                    if (detectedBitrate > 0) break
+                }
+            }
+        }
+
+        var detectedCodec = when {
+            info.ctype == BASS.BASS_CTYPE_STREAM_MP3 -> "MP3"
+            info.ctype == BASS.BASS_CTYPE_STREAM_MP2 -> "MP2"
+            info.ctype == BASS.BASS_CTYPE_STREAM_MP1 -> "MP1"
+            info.ctype == BASS.BASS_CTYPE_STREAM_OGG -> "OGG Vorbis"
+            info.ctype == BASS.BASS_CTYPE_STREAM_WAV_PCM || info.ctype == BASS.BASS_CTYPE_STREAM_WAV -> "WAV"
+            info.ctype == 0x10b00 || info.ctype == 0x10b01 || info.ctype == 0x10b02 -> "AAC"
+            info.ctype == 0x10d00 -> "HLS"
+            else -> {
+                if (currentUrl.contains(".aac", true) || currentUrl.contains("aac", true)) "AAC"
+                else if (currentUrl.contains(".m3u8", true)) "HLS"
+                else if (currentUrl.contains(".opus", true)) "Opus"
+                else if (currentUrl.contains(".flac", true)) "FLAC"
+                else if (currentUrl.contains(".ogg", true)) "OGG"
+                else "MP3"
+            }
+        }
+
+        val httpTags = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_HTTP) as? Array<*>
+        if (httpTags != null) {
+            for (tag in httpTags) {
+                val line = tag?.toString() ?: ""
+                if (detectedBitrate == 0 && (line.startsWith("icy-br:", ignoreCase = true) || line.startsWith("x-audiocast-bitrate:", ignoreCase = true) || line.startsWith("ice-bitrate:", ignoreCase = true))) {
+                    val brStr = line.substringAfter(":").trim().takeWhile { it.isDigit() }
+                    detectedBitrate = brStr.toIntOrNull() ?: 0
+                }
+                if (line.startsWith("content-type:", ignoreCase = true)) {
+                    val cType = line.lowercase()
+                    if (cType.contains("aac") || cType.contains("audio/aacp")) detectedCodec = "AAC"
+                    else if (cType.contains("ogg")) detectedCodec = "OGG"
+                    else if (cType.contains("opus")) detectedCodec = "Opus"
+                    else if (cType.contains("flac")) detectedCodec = "FLAC"
+                    else if (cType.contains("mpeg") && detectedCodec == "HLS") detectedCodec = "HLS (MP3)"
+                }
+            }
+        }
+
+        currentCodec = detectedCodec
+        currentBitrate = detectedBitrate
+        currentSampleRate = info.freq
+        currentChannels = info.chans
+
+        val audioIntent = Intent("com.neyman.radio.AUDIO_INFO").apply {
+            putExtra("codec", currentCodec)
+            putExtra("bitrate", currentBitrate)
+            putExtra("sample_rate", currentSampleRate)
+            putExtra("channels", currentChannels)
+        }
+        sendLocalBroadcast(audioIntent)
+    }
+
+    private fun pausePlayback() {
+        if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
+            BASS.BASS_ChannelPause(streamHandle)
+            updateSessionState(PlaybackStateCompat.STATE_PAUSED)
+            showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
+            val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", false) }
+            sendLocalBroadcast(stateIntent)
+            unregisterNoisyReceiver()
+        }
+    }
+
+    private fun resumePlayback() {
+        if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) != BASS.BASS_ACTIVE_PLAYING) {
+            requestAudioFocus()
+            registerNoisyReceiver()
+            BASS.BASS_ChannelPlay(streamHandle, false)
+            updateSessionState(PlaybackStateCompat.STATE_PLAYING)
+            showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
+            val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", true) }
+            sendLocalBroadcast(stateIntent)
+        }
+    }
+
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
     private fun sendLocalBroadcast(intent: Intent) {
@@ -452,6 +754,13 @@ class PlaybackService : Service() {
             }
 
             if (streamHandle == 0) {
+                val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+                val autoReconnect = sp.getBoolean("auto_reconnect", true)
+                if (autoReconnect && reconnectAttempts < maxReconnectAttempts) {
+                    triggerReconnect("stream_create_failed")
+                    return@Thread
+                }
+                reconnectAttempts = 0
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")
                 errIntent.putExtra("error_code", errCode)
@@ -460,7 +769,14 @@ class PlaybackService : Service() {
                 return@Thread
             }
 
+            requestAudioFocus()
+            registerNoisyReceiver()
             BASS.BASS_ChannelPlay(streamHandle, false)
+            reconnectAttempts = 0
+            isReconnecting = false
+            consecutiveStallSeconds = 0
+
+            extractAndBroadcastAudioInfo()
 
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
@@ -480,23 +796,10 @@ class PlaybackService : Service() {
     private fun togglePlayback() {
         if (streamHandle == 0) return
         val activeStatus = BASS.BASS_ChannelIsActive(streamHandle)
-        
         if (activeStatus == BASS.BASS_ACTIVE_PLAYING) {
-            BASS.BASS_ChannelPause(streamHandle)
-            updateSessionState(PlaybackStateCompat.STATE_PAUSED)
-            showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
-            
-            val stateIntent = Intent("com.neyman.radio.STATE")
-            stateIntent.putExtra("isPlaying", false)
-            sendLocalBroadcast(stateIntent)
+            pausePlayback()
         } else {
-            BASS.BASS_ChannelPlay(streamHandle, false)
-            updateSessionState(PlaybackStateCompat.STATE_PLAYING)
-            showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
-            
-            val stateIntent = Intent("com.neyman.radio.STATE")
-            stateIntent.putExtra("isPlaying", true)
-            sendLocalBroadcast(stateIntent)
+            resumePlayback()
         }
     }
 
@@ -504,10 +807,23 @@ class PlaybackService : Service() {
         metadataTimer = Timer()
         metadataTimer?.schedule(object : TimerTask() {
             override fun run() { pollMetadata() }
-        }, 1000, 10000)
+        }, 1000, 2000)
     }
 
     private fun pollMetadata() {
+        if (streamHandle != 0) {
+            val active = BASS.BASS_ChannelIsActive(streamHandle)
+            if (active == BASS.BASS_ACTIVE_STALLED) {
+                consecutiveStallSeconds += 2
+                if (consecutiveStallSeconds >= 4) {
+                    consecutiveStallSeconds = 0
+                    triggerReconnect("stalled")
+                    return
+                }
+            } else if (active == BASS.BASS_ACTIVE_PLAYING) {
+                consecutiveStallSeconds = 0
+            }
+        }
         if (streamHandle == 0 || BASS.BASS_ChannelIsActive(streamHandle) != BASS.BASS_ACTIVE_PLAYING) return
         
         var newTitle = ""
@@ -555,6 +871,7 @@ class PlaybackService : Service() {
 
         if (newTitle.isNotEmpty() && !newTitle.equals(currentStationName, ignoreCase = true) && newTitle != currentSongTitle) {
             currentSongTitle = newTitle
+            try { SettingsManager(this).addTrackToHistory(newTitle) } catch (e: Exception) {}
             
             val intent = Intent("com.neyman.radio.METADATA")
             intent.putExtra("title", newTitle)
@@ -646,6 +963,10 @@ class PlaybackService : Service() {
 
     override fun onDestroy() {
         metadataTimer?.cancel()
+        reconnectHandler.removeCallbacksAndMessages(null)
+        unregisterNetworkCallback()
+        unregisterNoisyReceiver()
+        abandonAudioFocus()
         try { proxyServerSocket?.close() } catch (e: Exception) {}
         proxyExecutor.shutdownNow()
         if (streamHandle != 0) {

@@ -35,6 +35,26 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("autoplay_at_start", false)
         set(value) = prefs.edit().putBoolean("autoplay_at_start", value).apply()
 
+    var autoReconnect: Boolean
+        get() = prefs.getBoolean("auto_reconnect", true)
+        set(value) = prefs.edit().putBoolean("auto_reconnect", value).apply()
+
+    var audioFocusDucking: String
+        get() = prefs.getString("audio_focus_ducking", "duck") ?: "duck"
+        set(value) = prefs.edit().putString("audio_focus_ducking", value).apply()
+
+    var pauseOnUnplug: Boolean
+        get() = prefs.getBoolean("pause_on_unplug", true)
+        set(value) = prefs.edit().putBoolean("pause_on_unplug", value).apply()
+
+    var trackHistoryEnabled: Boolean
+        get() = prefs.getBoolean("track_history_enabled", true)
+        set(value) = prefs.edit().putBoolean("track_history_enabled", value).apply()
+
+    var stationHistoryEnabled: Boolean
+        get() = prefs.getBoolean("station_history_enabled", true)
+        set(value) = prefs.edit().putBoolean("station_history_enabled", value).apply()
+
     fun getTheme(): String = prefs.getString("app_theme", "system") ?: "system"
     fun saveTheme(theme: String) = prefs.edit().putString("app_theme", theme).apply()
 
@@ -134,5 +154,63 @@ class SettingsManager(context: Context) {
             return Station(name, url, country)
         }
         return null
+    }
+
+    // История прослушанных треков
+    fun loadTrackHistory(): ArrayList<String> {
+        val list = ArrayList<String>()
+        val jsonStr = prefs.getString("track_history_json", null) ?: return list
+        try {
+            val arr = JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val t = arr.optString(i, "")
+                if (t.isNotEmpty()) list.add(t)
+            }
+        } catch (e: Exception) {}
+        return list
+    }
+
+    fun addTrackToHistory(track: String) {
+        val clean = track.trim()
+        if (!trackHistoryEnabled || clean.isEmpty()) return
+        val list = loadTrackHistory()
+        list.remove(clean)
+        list.add(0, clean)
+        while (list.size > 15) list.removeAt(list.size - 1)
+        val arr = JSONArray()
+        for (t in list) arr.put(t)
+        prefs.edit().putString("track_history_json", arr.toString()).apply()
+    }
+
+    fun clearTrackHistory() {
+        prefs.edit().remove("track_history_json").apply()
+    }
+
+    // История прослушанных станций (Недавние)
+    fun loadStationHistory(): ArrayList<Station> {
+        val list = ArrayList<Station>()
+        val jsonStr = prefs.getString("station_history_json", null) ?: return list
+        try {
+            val arr = JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                list.add(Station.fromJson(arr.getJSONObject(i)))
+            }
+        } catch (e: Exception) {}
+        return list
+    }
+
+    fun addStationToHistory(station: Station) {
+        if (!stationHistoryEnabled || station.url.isBlank()) return
+        val list = loadStationHistory()
+        list.removeAll { it.url == station.url }
+        list.add(0, station)
+        while (list.size > 20) list.removeAt(list.size - 1)
+        val arr = JSONArray()
+        for (s in list) arr.put(s.toJson())
+        prefs.edit().putString("station_history_json", arr.toString()).apply()
+    }
+
+    fun clearStationHistory() {
+        prefs.edit().remove("station_history_json").apply()
     }
 }

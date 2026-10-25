@@ -16,6 +16,7 @@ import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +49,12 @@ class MainActivity : AppCompatActivity() {
     private var allLoadedCustomStations = ArrayList<Station>()
     private var currentPlaylist = ArrayList<Station>()
     private var currentStationIndex = -1
+    private var recentStations = ArrayList<Station>()
+    private lateinit var btnRecentTab: Button
+    private var currentAudioCodec = ""
+    private var currentAudioBitrate = 0
+    private var currentAudioSampleRate = 0
+    private var currentAudioChannels = 0
 
     private lateinit var navLayout: LinearLayout
     private lateinit var listView: ListView
@@ -59,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var folderDisplay: TextView
     private lateinit var countrySearchEdit: EditText
     private lateinit var countrySearchLayout: LinearLayout
-    private lateinit var customStationsAddBtn: Button
     private var allCountries = ArrayList<String>()
     private var allLoadedStations = ArrayList<Station>()
     private var m3uImportTarget = "CUSTOM"
@@ -122,6 +128,27 @@ class MainActivity : AppCompatActivity() {
                     stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName + errText
                     btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
+                }
+                "com.neyman.radio.AUDIO_INFO" -> {
+                    currentAudioCodec = intent.getStringExtra("codec") ?: ""
+                    currentAudioBitrate = intent.getIntExtra("bitrate", 0)
+                    currentAudioSampleRate = intent.getIntExtra("sample_rate", 0)
+                    currentAudioChannels = intent.getIntExtra("channels", 0)
+                }
+                "com.neyman.radio.RECONNECTING" -> {
+                    val attempt = intent.getIntExtra("attempt", 1)
+                    val max = intent.getIntExtra("max", 5)
+                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                    val msg = getStr("Переподключение ($attempt/$max): ", "Yeniden bağlanıyor ($attempt/$max): ") + stName
+                    stationNameText.text = msg
+                    btnPlayPause.text = getStr("Загрузка...", "Yükleniyor...")
+                    stationNameText.announceForAccessibility(msg)
+                }
+                "com.neyman.radio.UNPLUGGED" -> {
+                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
+                    val msg = getStr("Наушники отключены. Воспроизведение на паузе.", "Kulaklık çıkarıldı. Oynatma duraklatıldı.")
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                    stationNameText.announceForAccessibility(msg)
                 }
                 "com.neyman.radio.NEXT" -> playNext()
                 "com.neyman.radio.PREV" -> playPrev()
@@ -262,7 +289,7 @@ class MainActivity : AppCompatActivity() {
                                 if (currentMode == "CUSTOM_STATIONS") {
                                     filterCustomStations(countrySearchEdit.text.toString())
                                 }
-                                Toast.makeText(this@MainActivity, getStr("Добавлено $added пользовательских станций из M3U!", "$added özel istasyon M3U'dan eklendi!"), Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, getStr("Добавлено $added пользовательских станций из M3U!", "$added kullanıcı istasyonu M3U'dan eklendi!"), Toast.LENGTH_LONG).show()
                             }
                         }
                     } else {
@@ -294,6 +321,9 @@ class MainActivity : AppCompatActivity() {
             addAction("com.neyman.radio.METADATA")
             addAction("com.neyman.radio.STATE")
             addAction("com.neyman.radio.ERROR")
+            addAction("com.neyman.radio.AUDIO_INFO")
+            addAction("com.neyman.radio.RECONNECTING")
+            addAction("com.neyman.radio.UNPLUGGED")
             addAction("com.neyman.radio.NEXT")
             addAction("com.neyman.radio.PREV")
             addAction("com.neyman.radio.STOP_APP")
@@ -325,7 +355,13 @@ class MainActivity : AppCompatActivity() {
         val btnGenresTab = Button(this).apply { text = getStr("Жанры", "Türler"); isAllCaps = false; layoutParams = btnParams }
         val btnTopTab = Button(this).apply { text = getStr("Популярные", "Popüler"); isAllCaps = false; layoutParams = btnParams }
         val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); isAllCaps = false; layoutParams = btnParams }
-        val btnCustomTab = Button(this).apply { text = getStr("Пользовательские станции", "Özel İstasyonlar"); isAllCaps = false; layoutParams = btnParams }
+        val btnCustomTab = Button(this).apply { text = getStr("Пользовательские станции", "Kullanıcı İstasyonları"); isAllCaps = false; layoutParams = btnParams }
+        btnRecentTab = Button(this).apply { 
+            text = getStr("История станций", "Son Çalınan İstasyonlar")
+            isAllCaps = false
+            layoutParams = btnParams
+            visibility = if (settings.stationHistoryEnabled) View.VISIBLE else View.GONE
+        }
         
         navLayout.addView(btnSearchTab)
         navLayout.addView(btnCountriesTab)
@@ -333,6 +369,7 @@ class MainActivity : AppCompatActivity() {
         navLayout.addView(btnTopTab)
         navLayout.addView(btnFavTab)
         navLayout.addView(btnCustomTab)
+        navLayout.addView(btnRecentTab)
 
         listView = ListView(this)
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
@@ -345,6 +382,7 @@ class MainActivity : AppCompatActivity() {
                 val list = when (currentMode) {
                     "FAVORITES" -> favorites
                     "CUSTOM_STATIONS" -> customStations
+                    "RECENT_STATIONS" -> recentStations
                     else -> stations
                 }
                 if (position >= 0 && position < list.size) {
@@ -360,7 +398,18 @@ class MainActivity : AppCompatActivity() {
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(104, getStr("Поделиться", "Paylaş")))
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(105, getStr("Экспортировать в M3U", "M3U olarak dışa aktar")))
                             if (currentMode == "CUSTOM_STATIONS") {
-                                info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(106, getStr("Удалить из пользовательских", "Özel istasyonlardan sil")))
+                                info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(106, getStr("Удалить из пользовательских", "Kullanıcı istasyonlarından sil")))
+                            }
+                            if (currentMode == "FAVORITES" && favorites.size > 1) {
+                                if (position > 0) {
+                                    info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(107, getStr("Переместить вверх", "Yukarı taşı")))
+                                    info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(110, getStr("Переместить в самое начало", "En başa taşı")))
+                                }
+                                if (position < favorites.size - 1) {
+                                    info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(108, getStr("Переместить вниз", "Aşağı taşı")))
+                                    info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(111, getStr("Переместить в самый конец", "En sona taşı")))
+                                }
+                                info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(109, getStr("Переместить на позицию...", "Konuma taşı...")))
                             }
                         }
 
@@ -374,6 +423,40 @@ class MainActivity : AppCompatActivity() {
                                 104 -> { shareStation(station); return true }
                                 105 -> { exportStationsToM3u(listOf(station), "${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}.m3u"); return true }
                                 106 -> { if (currentMode == "CUSTOM_STATIONS") { removeCustomStation(station); return true } }
+                                107 -> {
+                                    if (currentMode == "FAVORITES") {
+                                        val cur = favorites.indexOfFirst { it.url == station.url }
+                                        if (cur > 0) moveFavorite(cur, cur - 1)
+                                        return true
+                                    }
+                                }
+                                108 -> {
+                                    if (currentMode == "FAVORITES") {
+                                        val cur = favorites.indexOfFirst { it.url == station.url }
+                                        if (cur != -1 && cur < favorites.size - 1) moveFavorite(cur, cur + 1)
+                                        return true
+                                    }
+                                }
+                                109 -> {
+                                    if (currentMode == "FAVORITES") {
+                                        showMoveFavoriteDialog(station)
+                                        return true
+                                    }
+                                }
+                                110 -> {
+                                    if (currentMode == "FAVORITES") {
+                                        val cur = favorites.indexOfFirst { it.url == station.url }
+                                        if (cur > 0) moveFavorite(cur, 0)
+                                        return true
+                                    }
+                                }
+                                111 -> {
+                                    if (currentMode == "FAVORITES") {
+                                        val cur = favorites.indexOfFirst { it.url == station.url }
+                                        if (cur != -1 && cur < favorites.size - 1) moveFavorite(cur, favorites.size - 1)
+                                        return true
+                                    }
+                                }
                             }
                             return super.performAccessibilityAction(host, action, args)
                         }
@@ -413,15 +496,6 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
             setPadding(16, 8, 16, 8)
         }
-        customStationsAddBtn = Button(this).apply {
-            text = getStr("➕ Добавить станцию (URL / M3U)", "➕ İstasyon Ekle (URL / M3U)")
-            isAllCaps = false
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                setMargins(0, 0, 0, 8)
-            }
-            setOnClickListener { showAddCustomStationMenu() }
-        }
         countrySearchEdit = EditText(this).apply {
             hint = getStr("Поиск страны...", "Ülke ara...")
             setSingleLine(true)
@@ -438,7 +512,6 @@ class MainActivity : AppCompatActivity() {
                 }
             })
         }
-        countrySearchLayout.addView(customStationsAddBtn)
         countrySearchLayout.addView(countrySearchEdit)
         mainLayout.addView(countrySearchLayout)
         mainLayout.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -472,7 +545,14 @@ class MainActivity : AppCompatActivity() {
             customStations.addAll(allLoadedCustomStations)
             updateList(customStations.map { it.name })
             val cSize = customStations.size
-            listView.announceForAccessibility(getStr("Пользовательских станций: $cSize", "Özel istasyonlar: $cSize"))
+            listView.announceForAccessibility(getStr("Пользовательских станций: $cSize", "Kullanıcı istasyonları: $cSize"))
+        }
+        btnRecentTab.setOnClickListener {
+            currentMode = "RECENT_STATIONS"; updateUIForMode()
+            recentStations = settings.loadStationHistory()
+            updateList(recentStations.map { it.name })
+            val rSize = recentStations.size
+            listView.announceForAccessibility(if (rSize == 0) getStr("История станций пуста", "İstasyon geçmişi boş") else getStr("Недавних станций: $rSize", "Son çalınan istasyon: $rSize"))
         }
 
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -481,6 +561,7 @@ class MainActivity : AppCompatActivity() {
                 "GENRES" -> loadStationsByGenre(genres[position].split(" (")[0])
                 "FAVORITES" -> playStation(position, favorites)
                 "CUSTOM_STATIONS" -> playStation(position, customStations)
+                "RECENT_STATIONS" -> playStation(position, recentStations)
                 else -> playStation(position, stations)
             }
         }
@@ -508,6 +589,7 @@ class MainActivity : AppCompatActivity() {
             val list = when (currentMode) {
                 "FAVORITES" -> favorites
                 "CUSTOM_STATIONS" -> customStations
+                "RECENT_STATIONS" -> recentStations
                 else -> stations
             }
             if (position in list.indices) { showStationListMenu(list[position]); true } else false
@@ -526,11 +608,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUIForMode() {
         countrySearchLayout.visibility = View.GONE
-        customStationsAddBtn.visibility = View.GONE
         when (currentMode) {
             "MAIN_MENU" -> { 
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
+                btnRecentTab.visibility = if (settings.stationHistoryEnabled) View.VISIBLE else View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
                 supportActionBar?.title = "Radio Player"
             }
@@ -581,10 +663,15 @@ class MainActivity : AppCompatActivity() {
             "CUSTOM_STATIONS" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
-                customStationsAddBtn.visibility = View.VISIBLE
-                countrySearchEdit.hint = getStr("Поиск среди своих станций...", "Özel istasyonlarda ara...")
+                countrySearchEdit.hint = getStr("Поиск среди своих станций...", "Kullanıcı istasyonlarında ara...")
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
-                supportActionBar?.title = getStr("Пользовательские станции", "Özel İstasyonlar") 
+                supportActionBar?.title = getStr("Пользовательские станции", "Kullanıcı İstasyonları") 
+            }
+            "RECENT_STATIONS" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("История станций", "Son Çalınan İstasyonlar") 
             }
             "SETTINGS" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
@@ -598,7 +685,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
-        menu.add(0, 3, 0, getStr("Добавить станцию (URL / M3U)", "İstasyon Ekle (URL / M3U)"))
+        menu.add(0, 3, 0, getStr("Добавить станцию", "İstasyon Ekle"))
+        menu.add(0, 5, 0, getStr("История треков", "Parça Geçmişi"))
+        menu.add(0, 6, 0, getStr("Очистить историю", "Geçmişi Temizle"))
         menu.add(0, 4, 0, getStr("Экспорт в M3U", "M3U Olarak Dışa Aktar"))
         menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
         return super.onCreateOptionsMenu(menu)
@@ -607,6 +696,10 @@ class MainActivity : AppCompatActivity() {
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         val showMenu = currentMode != "SETTINGS"
         for (i in 0 until menu.size()) { menu.getItem(i).isVisible = showMenu }
+        if (showMenu) {
+            menu.findItem(5)?.isVisible = settings.trackHistoryEnabled
+            menu.findItem(6)?.isVisible = currentMode == "RECENT_STATIONS"
+        }
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -620,10 +713,13 @@ class MainActivity : AppCompatActivity() {
                 val toExport = when (currentMode) {
                     "FAVORITES" -> favorites
                     "CUSTOM_STATIONS" -> allLoadedCustomStations
+                    "RECENT_STATIONS" -> recentStations
                     else -> if (stations.isNotEmpty()) stations else favorites
                 }
                 exportStationsToM3u(toExport, "radio_playlist.m3u")
             }
+            5 -> showTrackHistoryDialog()
+            6 -> clearStationHistoryDialog()
         }
         return super.onOptionsItemSelected(item)
     }
@@ -632,7 +728,7 @@ class MainActivity : AppCompatActivity() {
         when (currentMode) {
             "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; countrySearchEdit.setText(""); updateUIForMode(); countries.clear(); countries.addAll(allCountries); updateList(countries) }
             "STATIONS_OF_GENRE" -> { currentMode = "GENRES"; updateUIForMode(); updateList(genres) }
-            "COUNTRIES", "GENRES", "TOP_STATIONS", "FAVORITES", "CUSTOM_STATIONS", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
+            "COUNTRIES", "GENRES", "TOP_STATIONS", "FAVORITES", "CUSTOM_STATIONS", "RECENT_STATIONS", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
             "SETTINGS" -> { currentMode = preSettingsMode; updateUIForMode() }
             else -> super.onBackPressed()
         }
@@ -708,6 +804,50 @@ class MainActivity : AppCompatActivity() {
             settings.recFormat = newFmt
         }
 
+        addHeader(getStr("Автопереподключение при обрыве сети", "Ağ kesildiğinde otomatik yeniden bağlan"))
+        val autoReconnectSwitch = Switch(this).apply {
+            isChecked = settings.autoReconnect
+            setOnCheckedChangeListener { _, isCheckedVal -> settings.autoReconnect = isCheckedVal }
+        }
+        layout.addView(autoReconnectSwitch)
+
+        addSettingItem(
+            layout,
+            getStr("Поведение при уведомлениях и навигаторе", "Bildirim ve navigasyon sırasında ses"),
+            arrayOf(getStr("Приглушать радио (Ducking)", "Sesi kıs (Ducking)"), getStr("Ставить на паузу", "Duraklat")),
+            arrayOf("duck", "pause"),
+            { settings.audioFocusDucking }
+        ) { newFocus ->
+            settings.audioFocusDucking = newFocus
+        }
+
+        addHeader(getStr("Автопауза при отключении наушников", "Kulaklık çıkarıldığında otomatik duraklat"))
+        val unplugSwitch = Switch(this).apply {
+            isChecked = settings.pauseOnUnplug
+            setOnCheckedChangeListener { _, isCheckedVal -> settings.pauseOnUnplug = isCheckedVal }
+        }
+        layout.addView(unplugSwitch)
+
+        addHeader(getStr("История прослушанных треков", "Çalınan parçaların geçmişi"))
+        val trackHistSwitch = Switch(this).apply {
+            isChecked = settings.trackHistoryEnabled
+            setOnCheckedChangeListener { _, isCheckedVal ->
+                settings.trackHistoryEnabled = isCheckedVal
+                invalidateOptionsMenu()
+            }
+        }
+        layout.addView(trackHistSwitch)
+
+        addHeader(getStr("История станций (Недавние)", "Son çalınan istasyonlar geçmişi"))
+        val stationHistSwitch = Switch(this).apply {
+            isChecked = settings.stationHistoryEnabled
+            setOnCheckedChangeListener { _, isCheckedVal ->
+                settings.stationHistoryEnabled = isCheckedVal
+                btnRecentTab.visibility = if (isCheckedVal) View.VISIBLE else View.GONE
+            }
+        }
+        layout.addView(stationHistSwitch)
+
         addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
         val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("Все записи автоматически сохраняются в папку Music на вашем телефоне.", "Tüm kayıtlar telefonunuzdaki Music klasörüne otomatik olarak kaydedilir.")
         folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 14f; setPadding(0,0,0,16) }
@@ -759,8 +899,16 @@ class MainActivity : AppCompatActivity() {
         actions.add(Pair(if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")) {
             if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
         })
+        actions.add(Pair(getStr("Информация о потоке и станции", "Akış ve İstasyon Bilgisi")) {
+            showStationInfo(station)
+        })
+        if (settings.trackHistoryEnabled) {
+            actions.add(Pair(getStr("История треков", "Parça Geçmişi")) {
+                showTrackHistoryDialog()
+            })
+        }
         if (isCustom) {
-            actions.add(Pair(getStr("Удалить из пользовательских", "Özel istasyonlardan sil")) {
+            actions.add(Pair(getStr("Удалить из пользовательских", "Kullanıcı istasyonlarından sil")) {
                 removeCustomStation(station)
             })
         }
@@ -793,16 +941,34 @@ class MainActivity : AppCompatActivity() {
         })
 
         if (currentMode == "FAVORITES" && favorites.isNotEmpty()) {
+            if (favorites.size > 1) {
+                val idx = favorites.indexOfFirst { it.url == station.url }
+                if (idx > 0) {
+                    actions.add(Pair(getStr("Переместить выше", "Yukarı taşı")) {
+                        val cur = favorites.indexOfFirst { it.url == station.url }
+                        if (cur > 0) moveFavorite(cur, cur - 1)
+                    })
+                }
+                if (idx != -1 && idx < favorites.size - 1) {
+                    actions.add(Pair(getStr("Переместить ниже", "Aşağı taşı")) {
+                        val cur = favorites.indexOfFirst { it.url == station.url }
+                        if (cur != -1 && cur < favorites.size - 1) moveFavorite(cur, cur + 1)
+                    })
+                }
+                actions.add(Pair(getStr("Переместить на позицию...", "Konuma taşı...")) {
+                    showMoveFavoriteDialog(station)
+                })
+            }
             actions.add(Pair(getStr("Экспортировать ВСЕ избранные в M3U", "Tüm favorileri M3U olarak dışa aktar")) {
                 exportStationsToM3u(favorites, "radio_favorites.m3u")
             })
         }
 
         if (currentMode == "CUSTOM_STATIONS" || isCustom) {
-            actions.add(Pair(getStr("Экспортировать ВСЕ свои станции в M3U", "Tüm özel istasyonları M3U olarak dışa aktar")) {
+            actions.add(Pair(getStr("Экспортировать ВСЕ свои станции в M3U", "Tüm kullanıcı istasyonlarını M3U olarak dışa aktar")) {
                 exportStationsToM3u(allLoadedCustomStations, "custom_radio_stations.m3u")
             })
-            actions.add(Pair(getStr("Удалить из пользовательских", "Özel istasyonlardan sil")) {
+            actions.add(Pair(getStr("Удалить из пользовательских", "Kullanıcı istasyonlarından sil")) {
                 removeCustomStation(station)
             })
         }
@@ -814,8 +980,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showStationInfo(station: Station) {
-        val info = getStr("Название: ", "Adı: ") + station.name + "\n" + getStr("Страна: ", "Ülke: ") + station.country + "\nURL: " + station.url
-        AlertDialog.Builder(this).setTitle(getStr("Информация", "Bilgi")).setMessage(info).setPositiveButton("OK", null).show()
+        val isCurrentPlaying = currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url
+        val sb = StringBuilder()
+        sb.append(getStr("Название: ", "Adı: ")).append(station.name).append("\n")
+        if (station.country.isNotEmpty()) {
+            sb.append(getStr("Страна: ", "Ülke: ")).append(station.country).append("\n")
+        }
+        sb.append("URL: ").append(station.url)
+        if (isCurrentPlaying) {
+            if (currentAudioCodec.isNotEmpty()) {
+                sb.append("\n").append(getStr("Аудиокодек: ", "Ses Kodeği: ")).append(currentAudioCodec)
+            }
+            if (currentAudioBitrate > 0) {
+                sb.append("\n").append(getStr("Битрейт: ", "Bit Hızı: ")).append("$currentAudioBitrate kbps")
+            }
+            if (currentAudioSampleRate > 0) {
+                val chanStr = if (currentAudioChannels == 1) getStr("Моно", "Mono") else getStr("Стерео", "Stereo")
+                sb.append("\n").append(getStr("Формат звука: ", "Ses Formatı: ")).append("$currentAudioSampleRate Hz, $chanStr")
+            }
+        }
+        AlertDialog.Builder(this).setTitle(getStr("Информация о станции", "İstasyon Bilgisi")).setMessage(sb.toString()).setPositiveButton("OK", null).show()
     }
 
     private fun updateSongInfo(title: String) {
@@ -987,10 +1171,91 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showTrackHistoryDialog() {
+        val tracks = settings.loadTrackHistory()
+        if (tracks.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(getStr("История треков", "Parça Geçmişi"))
+                .setMessage(getStr("История прослушанных треков пуста", "Çalınan parçaların geçmişi boş"))
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        val titles = tracks.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(getStr("История треков (последние 15)", "Parça Geçmişi (son 15)"))
+            .setItems(titles) { _, which ->
+                val track = tracks[which]
+                showTrackActionDialog(track)
+            }
+            .setNeutralButton(getStr("Очистить историю", "Geçmişi Temizle")) { _, _ ->
+                settings.clearTrackHistory()
+                Toast.makeText(this, getStr("История треков очищена", "Parça geçmişi temizlendi"), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(getStr("Закрыть", "Kapat"), null)
+            .show()
+    }
+
+    private fun showTrackActionDialog(track: String) {
+        val options = arrayOf(
+            getStr("Скопировать название", "Şarkı adını kopyala"),
+            getStr("Искать на YouTube", "YouTube'da Ara"),
+            getStr("Искать в браузере", "İnternette Ara")
+        )
+        AlertDialog.Builder(this)
+            .setTitle(track)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Track Info", track))
+                        Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + track, Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> {
+                        try {
+                            val ytIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(track, "UTF-8")))
+                            startActivity(ytIntent)
+                        } catch (e: Exception) {
+                            Toast.makeText(this, getStr("Ошибка открытия YouTube", "YouTube açma hatası"), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    2 -> {
+                        try {
+                            val webIntent = Intent(Intent.ACTION_WEB_SEARCH).apply {
+                                putExtra(android.app.SearchManager.QUERY, track)
+                            }
+                            startActivity(webIntent)
+                        } catch (e: Exception) {
+                            try {
+                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + URLEncoder.encode(track, "UTF-8")))
+                                startActivity(browserIntent)
+                            } catch (e2: Exception) {}
+                        }
+                    }
+                }
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
+    }
+
+    private fun clearStationHistoryDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Очистить историю станций?", "İstasyon geçmişi temizlensin mi?"))
+            .setPositiveButton(getStr("Очистить", "Temizle")) { _, _ ->
+                settings.clearStationHistory()
+                recentStations.clear()
+                updateList(emptyList())
+                Toast.makeText(this, getStr("История очищена", "Geçmiş temizlendi"), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
+    }
+
     private fun showAddCustomStationMenu() {
         val options = arrayOf(
-            getStr("Ввести URL вручную", "Manuel URL Gir"),
-            getStr("Импортировать из M3U файла", "M3U Dosyası İçe Aktar")
+            getStr("Добавить с URL", "URL ile ekle"),
+            getStr("Добавить M3U", "M3U ekle")
         )
         AlertDialog.Builder(this)
             .setTitle(getStr("Добавить станцию", "İstasyon Ekle"))
@@ -1017,14 +1282,14 @@ class MainActivity : AppCompatActivity() {
             setSingleLine(true)
         }
         val urlInput = EditText(this).apply {
-            hint = getStr("Ссылка на поток (URL)", "Akış Bağlantısı (URL)")
+            hint = getStr("URL станции", "İstasyon URL'si")
             setSingleLine(true)
         }
         layout.addView(nameInput)
         layout.addView(urlInput)
 
         AlertDialog.Builder(this)
-            .setTitle(getStr("Добавить свою станцию", "Özel İstasyon Ekle"))
+            .setTitle(getStr("Добавить станцию", "İstasyon Ekle"))
             .setView(layout)
             .setPositiveButton(getStr("Добавить", "Ekle")) { _, _ ->
                 val name = nameInput.text.toString().trim()
@@ -1052,7 +1317,7 @@ class MainActivity : AppCompatActivity() {
     private fun removeCustomStation(station: Station) {
         AlertDialog.Builder(this)
             .setTitle(getStr("Удаление станции", "İstasyonu Sil"))
-            .setMessage(getStr("Удалить станцию \"${station.name}\" из списка пользовательских?", "\"${station.name}\" özel istasyonlar listesinden silinsin mi?"))
+            .setMessage(getStr("Удалить станцию \"${station.name}\" из списка пользовательских?", "\"${station.name}\" kullanıcı istasyonları listesinden silinsin mi?"))
             .setPositiveButton(getStr("Удалить", "Sil")) { _, _ ->
                 customStations.removeAll { it.url == station.url }
                 allLoadedCustomStations.removeAll { it.url == station.url }
@@ -1131,6 +1396,13 @@ private fun showSearchDialog() {
         val station = currentPlaylist[index]
         
         settings.saveLastStation(station)
+        if (settings.stationHistoryEnabled) {
+            settings.addStationToHistory(station)
+        }
+        currentAudioCodec = ""
+        currentAudioBitrate = 0
+        currentAudioSampleRate = 0
+        currentAudioChannels = 0
         
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
         currentSongMetadata = ""
@@ -1343,6 +1615,115 @@ private fun showSearchDialog() {
         else { favorites.add(station); Toast.makeText(this, getStr("Добавлено", "Eklendi"), Toast.LENGTH_SHORT).show() }
         settings.saveFavorites(favorites)
         if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
+    }
+
+    private fun moveFavorite(fromPos: Int, toPos: Int) {
+        if (fromPos !in favorites.indices) return
+        val targetPos = toPos.coerceIn(0, favorites.size - 1)
+        if (fromPos == targetPos) return
+        val station = favorites.removeAt(fromPos)
+        favorites.add(targetPos, station)
+        settings.saveFavorites(favorites)
+        if (currentMode == "FAVORITES") {
+            updateList(favorites.map { it.name })
+            listView.post { listView.setSelection(targetPos) }
+        }
+        if (currentStationIndex in currentPlaylist.indices) {
+            val playingUrl = currentPlaylist[currentStationIndex].url
+            if (currentMode == "FAVORITES") {
+                currentPlaylist = ArrayList(favorites)
+                val newPlayingIdx = currentPlaylist.indexOfFirst { it.url == playingUrl }
+                if (newPlayingIdx != -1) currentStationIndex = newPlayingIdx
+            }
+        }
+        val msg = getStr(
+            "${station.name}: перемещена на позицию ${targetPos + 1} из ${favorites.size}",
+            "${station.name}: ${favorites.size} içinde ${targetPos + 1}. sıraya taşındı"
+        )
+        listView.announceForAccessibility(msg)
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showMoveFavoriteDialog(station: Station) {
+        val currentIndex = favorites.indexOfFirst { it.url == station.url }
+        if (currentIndex == -1) return
+        val total = favorites.size
+        if (total <= 1) {
+            Toast.makeText(this, getStr("В избранном только одна станция", "Favorilerde sadece bir istasyon var"), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 24)
+        }
+
+        val infoText = TextView(this).apply {
+            text = getStr(
+                "${station.name}\nТекущая позиция: ${currentIndex + 1} из $total.\nВведите новую позицию (от 1 до $total):",
+                "${station.name}\nMevcut sıra: $total içinde ${currentIndex + 1}.\nYeni sırayı girin (1 ile $total arası):"
+            )
+            textSize = 15f
+            setPadding(0, 0, 0, 16)
+        }
+
+        val posInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = getStr("Позиция (1 - $total)", "Sıra (1 - $total)")
+            setText((currentIndex + 1).toString())
+            selectAll()
+            setSingleLine(true)
+        }
+
+        val quickButtonsLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 16, 0, 8)
+        }
+        val btnTop = Button(this).apply {
+            text = getStr("В начало (№1)", "En başa (№1)")
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val btnBottom = Button(this).apply {
+            text = getStr("В конец (№$total)", "En sona (№$total)")
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        quickButtonsLayout.addView(btnTop)
+        quickButtonsLayout.addView(btnBottom)
+
+        layout.addView(infoText)
+        layout.addView(posInput)
+        layout.addView(quickButtonsLayout)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getStr("Переместить станцию", "İstasyonu Taşı"))
+            .setView(layout)
+            .setPositiveButton("OK") { _, _ ->
+                val inputStr = posInput.text.toString().trim()
+                val targetNum = inputStr.toIntOrNull()
+                if (targetNum == null || targetNum !in 1..total) {
+                    Toast.makeText(this@MainActivity, getStr("Введите число от 1 до $total", "1 ile $total arasında bir sayı girin"), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                val curIdx = favorites.indexOfFirst { it.url == station.url }
+                if (curIdx != -1) moveFavorite(curIdx, targetNum - 1)
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .create()
+
+        btnTop.setOnClickListener {
+            dialog.dismiss()
+            val curIdx = favorites.indexOfFirst { it.url == station.url }
+            if (curIdx != -1) moveFavorite(curIdx, 0)
+        }
+        btnBottom.setOnClickListener {
+            dialog.dismiss()
+            val curIdx = favorites.indexOfFirst { it.url == station.url }
+            if (curIdx != -1) moveFavorite(curIdx, total - 1)
+        }
+
+        dialog.show()
     }
 
     private fun shareStation(station: Station) {
