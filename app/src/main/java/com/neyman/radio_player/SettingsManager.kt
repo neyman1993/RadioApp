@@ -27,6 +27,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getString("rec_folder_uri", "") ?: ""
         set(value) = prefs.edit().putString("rec_folder_uri", value).apply()
 
+    var batteryOptAsked: Boolean
+        get() = prefs.getBoolean("battery_opt_asked", false)
+        set(value) = prefs.edit().putBoolean("battery_opt_asked", value).apply()
+
     var autoplayAtStart: Boolean // Новый параметр для автовоспроизведения
         get() = prefs.getBoolean("autoplay_at_start", false)
         set(value) = prefs.edit().putBoolean("autoplay_at_start", value).apply()
@@ -82,6 +86,35 @@ class SettingsManager(context: Context) {
         }
         
         return favList
+    }
+
+    fun saveCustomStations(customList: List<Station>) {
+        val arr = JSONArray()
+        for (station in customList) {
+            arr.put(station.toJson())
+        }
+        prefs.edit().putString("custom_stations_json", arr.toString()).apply()
+    }
+
+    fun loadCustomStations(): ArrayList<Station> {
+        val list = ArrayList<Station>()
+        val jsonStr = prefs.getString("custom_stations_json", null)
+        if (jsonStr != null) {
+            try {
+                val arr = JSONArray(jsonStr)
+                for (i in 0 until arr.length()) {
+                    list.add(Station.fromJson(arr.getJSONObject(i)))
+                }
+                return list
+            } catch (e: Exception) { }
+        }
+        val favs = loadFavorites()
+        val customFavs = favs.filter { it.country == "Custom" }
+        if (customFavs.isNotEmpty()) {
+            list.addAll(customFavs)
+            saveCustomStations(list)
+        }
+        return list
     }
 
     // Сохранение и загрузка последней станции

@@ -44,6 +44,8 @@ class MainActivity : AppCompatActivity() {
     private val countries = ArrayList<String>()
     private val genres = ArrayList<String>()
     private var favorites = ArrayList<Station>()
+    private var customStations = ArrayList<Station>()
+    private var allLoadedCustomStations = ArrayList<Station>()
     private var currentPlaylist = ArrayList<Station>()
     private var currentStationIndex = -1
 
@@ -57,8 +59,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var folderDisplay: TextView
     private lateinit var countrySearchEdit: EditText
     private lateinit var countrySearchLayout: LinearLayout
+    private lateinit var customStationsAddBtn: Button
     private var allCountries = ArrayList<String>()
     private var allLoadedStations = ArrayList<Station>()
+    private var m3uImportTarget = "CUSTOM"
 
     private var currentMode = "MAIN_MENU"
     private var preSettingsMode = "MAIN_MENU"
@@ -206,6 +210,71 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    
+    private var m3uExportData: String? = null
+
+    private val exportM3uLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
+        if (uri != null && !m3uExportData.isNullOrEmpty()) {
+            val data = m3uExportData ?: ""
+            thread {
+                try {
+                    contentResolver.openOutputStream(uri)?.use { it.write(data.toByteArray(Charsets.UTF_8)) }
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("M3U успешно сохранен", "M3U başarıyla kaydedildi"), Toast.LENGTH_LONG).show() }
+                } catch (e: Exception) {
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка сохранения M3U", "M3U kaydetme hatası"), Toast.LENGTH_SHORT).show() }
+                } finally {
+                    m3uExportData = null
+                }
+            }
+        }
+    }
+
+    private val importM3uLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            thread {
+                try {
+                    val bytes = contentResolver.openInputStream(uri)?.readBytes() ?: return@thread
+                    val fileContent = String(bytes, Charsets.UTF_8)
+                    val imported = parseM3uContent(fileContent)
+                    if (imported.isNotEmpty()) {
+                        runOnUiThread {
+                            var added = 0
+                            if (m3uImportTarget == "FAVORITES") {
+                                for (st in imported) {
+                                    if (favorites.none { it.url == st.url }) {
+                                        favorites.add(st)
+                                        added++
+                                    }
+                                }
+                                settings.saveFavorites(favorites)
+                                if (currentMode == "FAVORITES") updateList(favorites.map { it.name })
+                                Toast.makeText(this@MainActivity, getStr("Добавлено $added станций из M3U в избранное!", "$added istasyon M3U'dan favorilere eklendi!"), Toast.LENGTH_LONG).show()
+                            } else {
+                                for (st in imported) {
+                                    if (customStations.none { it.url == st.url }) {
+                                        customStations.add(st)
+                                        added++
+                                    }
+                                }
+                                settings.saveCustomStations(customStations)
+                                allLoadedCustomStations.clear()
+                                allLoadedCustomStations.addAll(customStations)
+                                if (currentMode == "CUSTOM_STATIONS") {
+                                    filterCustomStations(countrySearchEdit.text.toString())
+                                }
+                                Toast.makeText(this@MainActivity, getStr("Добавлено $added пользовательских станций из M3U!", "$added özel istasyon M3U'dan eklendi!"), Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } else {
+                        runOnUiThread { Toast.makeText(this@MainActivity, getStr("В M3U файле станции не найдены", "M3U dosyasında istasyon bulunamadı"), Toast.LENGTH_SHORT).show() }
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Ошибка чтения M3U файла", "M3U dosyası okuma hatası"), Toast.LENGTH_SHORT).show() }
+                }
+            }
+        }
+    }
+
     private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -215,6 +284,10 @@ class MainActivity : AppCompatActivity() {
         settings.applySettings()
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
+        customStations = settings.loadCustomStations()
+        allLoadedCustomStations.clear()
+        allLoadedCustomStations.addAll(customStations)
+        checkBatteryOptimization()
         
         val filter = IntentFilter().apply {
             addAction("com.neyman.radio.READY")
@@ -252,12 +325,14 @@ class MainActivity : AppCompatActivity() {
         val btnGenresTab = Button(this).apply { text = getStr("Жанры", "Türler"); isAllCaps = false; layoutParams = btnParams }
         val btnTopTab = Button(this).apply { text = getStr("Популярные", "Popüler"); isAllCaps = false; layoutParams = btnParams }
         val btnFavTab = Button(this).apply { text = getStr("Избранное", "Favoriler"); isAllCaps = false; layoutParams = btnParams }
+        val btnCustomTab = Button(this).apply { text = getStr("Пользовательские станции", "Özel İstasyonlar"); isAllCaps = false; layoutParams = btnParams }
         
         navLayout.addView(btnSearchTab)
         navLayout.addView(btnCountriesTab)
         navLayout.addView(btnGenresTab)
         navLayout.addView(btnTopTab)
         navLayout.addView(btnFavTab)
+        navLayout.addView(btnCustomTab)
 
         listView = ListView(this)
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
@@ -267,7 +342,11 @@ class MainActivity : AppCompatActivity() {
                 ViewCompat.setAccessibilityDelegate(view, null)
                 if (currentMode == "COUNTRIES" || currentMode == "GENRES") return view
 
-                val list = if (currentMode == "FAVORITES") favorites else stations
+                val list = when (currentMode) {
+                    "FAVORITES" -> favorites
+                    "CUSTOM_STATIONS" -> customStations
+                    else -> stations
+                }
                 if (position >= 0 && position < list.size) {
                     ViewCompat.setAccessibilityDelegate(view, object : AccessibilityDelegateCompat() {
                         override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
@@ -279,6 +358,10 @@ class MainActivity : AppCompatActivity() {
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(102, getStr("Скопировать название песни", "Şarkı adını kopyala")))
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(103, getStr("Информация", "Bilgi")))
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(104, getStr("Поделиться", "Paylaş")))
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(105, getStr("Экспортировать в M3U", "M3U olarak dışa aktar")))
+                            if (currentMode == "CUSTOM_STATIONS") {
+                                info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(106, getStr("Удалить из пользовательских", "Özel istasyonlardan sil")))
+                            }
                         }
 
                         override fun performAccessibilityAction(host: View, action: Int, args: Bundle?): Boolean {
@@ -289,6 +372,8 @@ class MainActivity : AppCompatActivity() {
                                 102 -> { copySongMetadata(station); return true }
                                 103 -> { showStationInfo(station); return true }
                                 104 -> { shareStation(station); return true }
+                                105 -> { exportStationsToM3u(listOf(station), "${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}.m3u"); return true }
+                                106 -> { if (currentMode == "CUSTOM_STATIONS") { removeCustomStation(station); return true } }
                             }
                             return super.performAccessibilityAction(host, action, args)
                         }
@@ -328,6 +413,15 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
             setPadding(16, 8, 16, 8)
         }
+        customStationsAddBtn = Button(this).apply {
+            text = getStr("➕ Добавить станцию (URL / M3U)", "➕ İstasyon Ekle (URL / M3U)")
+            isAllCaps = false
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, 0, 0, 8)
+            }
+            setOnClickListener { showAddCustomStationMenu() }
+        }
         countrySearchEdit = EditText(this).apply {
             hint = getStr("Поиск страны...", "Ülke ara...")
             setSingleLine(true)
@@ -339,10 +433,12 @@ class MainActivity : AppCompatActivity() {
                     when (currentMode) {
                         "COUNTRIES" -> filterCountries(q)
                         "STATIONS_OF_COUNTRY" -> filterStations(q)
+                        "CUSTOM_STATIONS" -> filterCustomStations(q)
                     }
                 }
             })
         }
+        countrySearchLayout.addView(customStationsAddBtn)
         countrySearchLayout.addView(countrySearchEdit)
         mainLayout.addView(countrySearchLayout)
         mainLayout.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -369,18 +465,51 @@ class MainActivity : AppCompatActivity() {
             currentMode = "FAVORITES"; updateUIForMode()
             updateList(favorites.map { it.name }); listView.announceForAccessibility(getStr("В избранном ${favorites.size} станций", "Favorilerde ${favorites.size} istasyon var"))
         }
+        btnCustomTab.setOnClickListener { 
+            currentMode = "CUSTOM_STATIONS"; updateUIForMode()
+            countrySearchEdit.setText("")
+            customStations.clear()
+            customStations.addAll(allLoadedCustomStations)
+            updateList(customStations.map { it.name })
+            val cSize = customStations.size
+            listView.announceForAccessibility(getStr("Пользовательских станций: $cSize", "Özel istasyonlar: $cSize"))
+        }
 
         listView.setOnItemClickListener { _, _, position, _ ->
             when (currentMode) {
                 "COUNTRIES" -> loadStationsByCountry(countries[position].split(" (")[0])
                 "GENRES" -> loadStationsByGenre(genres[position].split(" (")[0])
-                else -> playStation(position, if (currentMode == "FAVORITES") favorites else stations)
+                "FAVORITES" -> playStation(position, favorites)
+                "CUSTOM_STATIONS" -> playStation(position, customStations)
+                else -> playStation(position, stations)
             }
         }
         
         listView.setOnItemLongClickListener { _, _, position, _ ->
-            if (currentMode == "COUNTRIES" || currentMode == "GENRES") return@setOnItemLongClickListener false
-            val list = if (currentMode == "FAVORITES") favorites else stations
+            if (currentMode == "COUNTRIES") {
+                if (position in countries.indices) {
+                    val countryRaw = countries[position]
+                    val countryName = countryRaw.split(" (")[0]
+                    val options = arrayOf(
+                        getStr("Экспортировать станции страны в M3U", "Ülke istasyonlarını M3U olarak dışa aktar")
+                    )
+                    AlertDialog.Builder(this)
+                        .setTitle(countryName)
+                        .setItems(options) { _, which ->
+                            when (which) {
+                                0 -> exportCountryStationsToM3u(countryName)
+                            }
+                        }.show()
+                    return@setOnItemLongClickListener true
+                }
+                return@setOnItemLongClickListener false
+            }
+            if (currentMode == "GENRES") return@setOnItemLongClickListener false
+            val list = when (currentMode) {
+                "FAVORITES" -> favorites
+                "CUSTOM_STATIONS" -> customStations
+                else -> stations
+            }
             if (position in list.indices) { showStationListMenu(list[position]); true } else false
         }
 
@@ -397,6 +526,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUIForMode() {
         countrySearchLayout.visibility = View.GONE
+        customStationsAddBtn.visibility = View.GONE
         when (currentMode) {
             "MAIN_MENU" -> { 
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
@@ -448,6 +578,14 @@ class MainActivity : AppCompatActivity() {
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Избранное", "Favoriler") 
             }
+            "CUSTOM_STATIONS" -> { 
+                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
+                customStationsAddBtn.visibility = View.VISIBLE
+                countrySearchEdit.hint = getStr("Поиск среди своих станций...", "Özel istasyonlarda ara...")
+                supportActionBar?.setDisplayHomeAsUpEnabled(true)
+                supportActionBar?.title = getStr("Пользовательские станции", "Özel İstasyonlar") 
+            }
             "SETTINGS" -> { 
                 navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
                 miniPlayerLayout.visibility = View.GONE
@@ -460,6 +598,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
+        menu.add(0, 3, 0, getStr("Добавить станцию (URL / M3U)", "İstasyon Ekle (URL / M3U)"))
+        menu.add(0, 4, 0, getStr("Экспорт в M3U", "M3U Olarak Dışa Aktar"))
         menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
         return super.onCreateOptionsMenu(menu)
     }
@@ -475,6 +615,15 @@ class MainActivity : AppCompatActivity() {
             android.R.id.home -> onBackPressed()
             1 -> { preSettingsMode = currentMode; currentMode = "SETTINGS"; updateUIForMode() }
             2 -> attemptExit(force = true)
+            3 -> showAddCustomStationMenu()
+            4 -> {
+                val toExport = when (currentMode) {
+                    "FAVORITES" -> favorites
+                    "CUSTOM_STATIONS" -> allLoadedCustomStations
+                    else -> if (stations.isNotEmpty()) stations else favorites
+                }
+                exportStationsToM3u(toExport, "radio_playlist.m3u")
+            }
         }
         return super.onOptionsItemSelected(item)
     }
@@ -483,7 +632,7 @@ class MainActivity : AppCompatActivity() {
         when (currentMode) {
             "STATIONS_OF_COUNTRY" -> { currentMode = "COUNTRIES"; countrySearchEdit.setText(""); updateUIForMode(); countries.clear(); countries.addAll(allCountries); updateList(countries) }
             "STATIONS_OF_GENRE" -> { currentMode = "GENRES"; updateUIForMode(); updateList(genres) }
-            "COUNTRIES", "GENRES", "TOP_STATIONS", "FAVORITES", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
+            "COUNTRIES", "GENRES", "TOP_STATIONS", "FAVORITES", "CUSTOM_STATIONS", "SEARCH_RESULTS" -> { currentMode = "MAIN_MENU"; updateUIForMode() }
             "SETTINGS" -> { currentMode = preSettingsMode; updateUIForMode() }
             else -> super.onBackPressed()
         }
@@ -502,7 +651,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun addSettingItem(layout: LinearLayout, title: String, displayNames: Array<String>, values: Array<String>, currentValue: () -> String, onSelected: (String) -> Unit) {
         layout.addView(TextView(this).apply { text = title; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, 24, 0, 8) })
-        val btn = Button(this).apply {
+        val btn = Button(this).apply { isAllCaps = false
             val current = currentValue()
             val idx = values.indexOf(current).takeIf { it >= 0 } ?: 0
             text = displayNames[idx]
@@ -563,16 +712,27 @@ class MainActivity : AppCompatActivity() {
         val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("Все записи автоматически сохраняются в папку Music на вашем телефоне.", "Tüm kayıtlar telefonunuzdaki Music klasörüne otomatik olarak kaydedilir.")
         folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 14f; setPadding(0,0,0,16) }
         layout.addView(folderDisplay)
-        layout.addView(Button(this).apply { text = getStr("Выбрать другую папку вручную", "Başka bir klasörü manuel seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
+        layout.addView(Button(this).apply { isAllCaps = false; text = getStr("Выбрать другую папку вручную", "Başka bir klasörü manuel seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
         
         addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
         val backupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        backupLayout.addView(Button(this).apply { text = getStr("Экспорт", "Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportFavoritesLauncher.launch("radio_favorites.json") } })
-        backupLayout.addView(Button(this).apply { text = getStr("Импорт", "İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { importFavoritesLauncher.launch(arrayOf("*/*")) } })
+        backupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Экспорт", "Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportFavoritesLauncher.launch("radio_favorites.json") } })
+        backupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Импорт", "İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { importFavoritesLauncher.launch(arrayOf("*/*")) } })
         layout.addView(backupLayout)
+        val m3uBackupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        m3uBackupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Экспорт в M3U", "M3U Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportStationsToM3u(favorites, "radio_favorites.m3u") } })
+        m3uBackupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Импорт из M3U", "M3U İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { m3uImportTarget = "FAVORITES"; importM3uLauncher.launch(arrayOf("*/*")) } })
+        layout.addView(m3uBackupLayout)
+
+        addHeader(getStr("Фоновый режим и батарея", "Arka Plan ve Pil"))
+        layout.addView(Button(this).apply {
+            isAllCaps = false
+            text = getStr("Отключить оптимизацию батареи", "Pil optimizasyonunu devre dışı bırak")
+            setOnClickListener { requestBatteryOptimizationExemption() }
+        })
         
         addHeader(getStr("Отладка", "Hata Ayıklama"))
-        layout.addView(Button(this).apply { text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet"); setOnClickListener { logExportLauncher.launch("RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt") } })
+        layout.addView(Button(this).apply { isAllCaps = false; text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet"); setOnClickListener { logExportLauncher.launch("RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt") } })
         
         return layout
     }
@@ -581,33 +741,75 @@ class MainActivity : AppCompatActivity() {
         if (currentStationIndex == -1 || currentPlaylist.isEmpty()) return
         val station = currentPlaylist[currentStationIndex]
         val isFav = favorites.any { it.url == station.url }
+        val isCustom = allLoadedCustomStations.any { it.url == station.url }
         
-        val options = arrayOf(
-            getStr("Скопировать название песни", "Şarkı adını kopyala"),
-            if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
-            if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet"),
-            if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")
-        )
-        AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, w ->
-            when (w) { 
-                0 -> copySongMetadata(station)
-                1 -> toggleFavorite(station)
-                2 -> toggleRecording()
-                3 -> if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
-            }
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        actions.add(Pair(getStr("Скопировать название песни", "Şarkı adını kopyala")) {
+            copySongMetadata(station)
+        })
+        actions.add(Pair(if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle")) {
+            toggleFavorite(station)
+        })
+        actions.add(Pair(getStr("Экспортировать станцию в M3U", "İstasyonu M3U olarak dışa aktar")) {
+            exportStationsToM3u(listOf(station), "${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}.m3u")
+        })
+        actions.add(Pair(if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet")) {
+            toggleRecording()
+        })
+        actions.add(Pair(if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")) {
+            if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
+        })
+        if (isCustom) {
+            actions.add(Pair(getStr("Удалить из пользовательских", "Özel istasyonlardan sil")) {
+                removeCustomStation(station)
+            })
+        }
+
+        val titles = actions.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this).setTitle(station.name).setItems(titles) { _, w ->
+            actions[w].second.invoke()
         }.show()
     }
 
     private fun showStationListMenu(station: Station) {
         val isFav = favorites.any { it.url == station.url }
-        val options = arrayOf(
-            if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle"),
-            getStr("Поделиться ссылкой", "Bağlantıyı paylaş"), 
-            getStr("Информация о станции", "İstasyon bilgisi"),
-            getStr("Скопировать название песни", "Şarkı adını kopyala")
-        )
-        AlertDialog.Builder(this).setTitle(station.name).setItems(options) { _, which ->
-            when (which) { 0 -> toggleFavorite(station); 1 -> shareStation(station); 2 -> showStationInfo(station); 3 -> copySongMetadata(station) }
+        val isCustom = allLoadedCustomStations.any { it.url == station.url }
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+
+        actions.add(Pair(if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle")) {
+            toggleFavorite(station)
+        })
+        actions.add(Pair(getStr("Поделиться ссылкой", "Bağlantıyı paylaş")) {
+            shareStation(station)
+        })
+        actions.add(Pair(getStr("Информация о станции", "İstasyon bilgisi")) {
+            showStationInfo(station)
+        })
+        actions.add(Pair(getStr("Скопировать название песни", "Şarkı adını kopyala")) {
+            copySongMetadata(station)
+        })
+        actions.add(Pair(getStr("Экспортировать станцию в M3U", "İstasyonu M3U olarak dışa aktar")) {
+            exportStationsToM3u(listOf(station), "${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}.m3u")
+        })
+
+        if (currentMode == "FAVORITES" && favorites.isNotEmpty()) {
+            actions.add(Pair(getStr("Экспортировать ВСЕ избранные в M3U", "Tüm favorileri M3U olarak dışa aktar")) {
+                exportStationsToM3u(favorites, "radio_favorites.m3u")
+            })
+        }
+
+        if (currentMode == "CUSTOM_STATIONS" || isCustom) {
+            actions.add(Pair(getStr("Экспортировать ВСЕ свои станции в M3U", "Tüm özel istasyonları M3U olarak dışa aktar")) {
+                exportStationsToM3u(allLoadedCustomStations, "custom_radio_stations.m3u")
+            })
+            actions.add(Pair(getStr("Удалить из пользовательских", "Özel istasyonlardan sil")) {
+                removeCustomStation(station)
+            })
+        }
+
+        val titles = actions.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this).setTitle(station.name).setItems(titles) { _, which ->
+            actions[which].second.invoke()
         }.show()
     }
 
@@ -705,7 +907,209 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    private fun showSearchDialog() {
+    
+    private fun parseM3uContent(content: String): List<Station> {
+        val list = ArrayList<Station>()
+        var currentTitle = ""
+        for (rawLine in content.lines()) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            if (line.startsWith("#EXTINF:", ignoreCase = true)) {
+                currentTitle = if (line.contains(",")) {
+                    line.substringAfterLast(",").trim()
+                } else {
+                    val tvgMatch = Regex("""tvg-name="([^"]+)"""", RegexOption.IGNORE_CASE).find(line)
+                    tvgMatch?.groupValues?.get(1)?.trim() ?: ""
+                }
+            } else if (!line.startsWith("#")) {
+                if (line.startsWith("http://", ignoreCase = true) || line.startsWith("https://", ignoreCase = true) || line.startsWith("mms://", ignoreCase = true) || line.startsWith("rtsp://", ignoreCase = true)) {
+                    val name = if (currentTitle.isNotEmpty()) currentTitle else {
+                        line.substringBefore("?").substringAfterLast("/").ifEmpty { "Custom Radio" }
+                    }
+                    list.add(Station(name, line, "M3U"))
+                    currentTitle = ""
+                }
+            }
+        }
+        return list
+    }
+
+    private fun buildM3uString(stationList: List<Station>): String {
+        val sb = StringBuilder()
+        sb.append("#EXTM3U\n")
+        for (st in stationList) {
+            val cleanName = st.name.replace("\n", " ").trim()
+            sb.append("#EXTINF:-1,")
+            sb.append(cleanName)
+            sb.append("\n")
+            sb.append(st.url.trim())
+            sb.append("\n")
+        }
+        return sb.toString()
+    }
+
+    private fun exportStationsToM3u(stationsList: List<Station>, fileName: String) {
+        if (stationsList.isEmpty()) {
+            Toast.makeText(this, getStr("Список пуст", "Liste boş"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        m3uExportData = buildM3uString(stationsList)
+        exportM3uLauncher.launch(fileName)
+    }
+
+    private fun exportCountryStationsToM3u(country: String) {
+        Toast.makeText(this, getStr("Загрузка станций для экспорта...", "Dışa aktarım için istasyonlar yükleniyor..."), Toast.LENGTH_SHORT).show()
+        thread {
+            try {
+                val res = fetchJsonWithFallback("bycountry/" + URLEncoder.encode(country, "UTF-8"))
+                val countryStations = ArrayList<Station>()
+                for (i in 0 until res.length()) {
+                    val o = res.getJSONObject(i)
+                    val url = if (o.optString("url_resolved").isNotEmpty()) o.optString("url_resolved") else o.optString("url")
+                    if (url.isNotEmpty()) countryStations.add(Station.fromJson(o))
+                }
+                if (countryStations.isNotEmpty()) {
+                    m3uExportData = buildM3uString(countryStations)
+                    val safeFileName = "${country.replace(Regex("[^a-zA-Z0-9.-]"), "_")}_stations.m3u"
+                    runOnUiThread {
+                        exportM3uLauncher.launch(safeFileName)
+                    }
+                } else {
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, getStr("Станции не найдены", "İstasyonlar bulunamadı"), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, getStr("Ошибка загрузки станций", "İstasyon yükleme hatası"), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun showAddCustomStationMenu() {
+        val options = arrayOf(
+            getStr("Ввести URL вручную", "Manuel URL Gir"),
+            getStr("Импортировать из M3U файла", "M3U Dosyası İçe Aktar")
+        )
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Добавить станцию", "İstasyon Ekle"))
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showAddCustomStationDialog()
+                    1 -> {
+                        m3uImportTarget = "CUSTOM"
+                        importM3uLauncher.launch(arrayOf("*/*"))
+                    }
+                }
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
+    }
+
+    private fun showAddCustomStationDialog() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 24)
+        }
+        val nameInput = EditText(this).apply {
+            hint = getStr("Название станции", "İstasyon Adı")
+            setSingleLine(true)
+        }
+        val urlInput = EditText(this).apply {
+            hint = getStr("Ссылка на поток (URL)", "Akış Bağlantısı (URL)")
+            setSingleLine(true)
+        }
+        layout.addView(nameInput)
+        layout.addView(urlInput)
+
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Добавить свою станцию", "Özel İstasyon Ekle"))
+            .setView(layout)
+            .setPositiveButton(getStr("Добавить", "Ekle")) { _, _ ->
+                val name = nameInput.text.toString().trim()
+                val url = urlInput.text.toString().trim()
+                if (name.isEmpty() || url.isEmpty()) {
+                    Toast.makeText(this, getStr("Заполните название и URL", "Ad ve URL giriniz"), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                if (allLoadedCustomStations.any { it.url == url }) {
+                    Toast.makeText(this, getStr("Эта станция уже добавлена", "Bu istasyon zaten eklendi"), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                val newStation = Station(name, url, "Custom")
+                allLoadedCustomStations.add(newStation)
+                settings.saveCustomStations(allLoadedCustomStations)
+                if (currentMode == "CUSTOM_STATIONS") {
+                    filterCustomStations(countrySearchEdit.text.toString())
+                }
+                Toast.makeText(this, getStr("Станция успешно добавлена!", "İstasyon başarıyla eklendi!"), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
+    }
+
+    private fun removeCustomStation(station: Station) {
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Удаление станции", "İstasyonu Sil"))
+            .setMessage(getStr("Удалить станцию \"${station.name}\" из списка пользовательских?", "\"${station.name}\" özel istasyonlar listesinden silinsin mi?"))
+            .setPositiveButton(getStr("Удалить", "Sil")) { _, _ ->
+                customStations.removeAll { it.url == station.url }
+                allLoadedCustomStations.removeAll { it.url == station.url }
+                settings.saveCustomStations(allLoadedCustomStations)
+                if (currentMode == "CUSTOM_STATIONS") {
+                    filterCustomStations(countrySearchEdit.text.toString())
+                }
+                Toast.makeText(this, getStr("Станция удалена", "İstasyon silindi"), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
+    }
+
+    private fun checkBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                if (!settings.batteryOptAsked) {
+                    settings.batteryOptAsked = true
+                    showBatteryOptimizationDialog()
+                }
+            }
+        }
+    }
+
+    private fun showBatteryOptimizationDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Фоновая работа и батарея", "Arka Planda Çalışma ve Pil"))
+            .setMessage(getStr(
+                "Для непрерывного воспроизведения и записи радио при выключенном экране рекомендуется отключить ограничения батареи для приложения.",
+                "Ekran kapalıyken radyonun kesintisiz çalması ve kaydetmesi için uygulama için pil kısıtlamalarını devre dışı bırakmanız önerilir."
+            ))
+            .setPositiveButton(getStr("Разрешить", "İzin Ver")) { _, _ ->
+                requestBatteryOptimizationExemption()
+            }
+            .setNegativeButton(getStr("Позже", "Daha Sonra"), null)
+            .show()
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    startActivity(intent)
+                } catch (e2: Exception) {
+                    Toast.makeText(this, getStr("Не удалось открыть настройки батареи", "Pil ayarları açılamadı"), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+private fun showSearchDialog() {
         val input = EditText(this).apply { hint = getStr("Название", "Adı") }
         AlertDialog.Builder(this).setTitle(getStr("Поиск", "Arama")).setView(input)
             .setPositiveButton(getStr("Найти", "Bul")) { _, _ -> 
@@ -814,7 +1218,7 @@ class MainActivity : AppCompatActivity() {
                         countrySearchEdit.setText("")
                     }
                     updateList(stations.map { it.name }) 
-                    listView.announceForAccessibility(getStr("Загружено $ станций", "$ istasyon yüklendi"))
+                    val stCount = stations.size; listView.announceForAccessibility(getStr("Загружено $stCount станций", "$stCount istasyon yüklendi"))
                 }
             } catch (e: Exception) {}
         }
@@ -899,6 +1303,20 @@ class MainActivity : AppCompatActivity() {
             stations.clear()
             stations.addAll(filtered)
             updateList(stations.map { it.name })
+        }
+    }
+
+    private fun filterCustomStations(query: String) {
+        if (query.isEmpty()) {
+            customStations.clear()
+            customStations.addAll(allLoadedCustomStations)
+            updateList(customStations.map { it.name })
+        } else {
+            val lowerQuery = query.lowercase(Locale.getDefault())
+            val filtered = allLoadedCustomStations.filter { it.name.lowercase(Locale.getDefault()).contains(lowerQuery) }
+            customStations.clear()
+            customStations.addAll(filtered)
+            updateList(customStations.map { it.name })
         }
     }
 
