@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private var currentStationIndex = -1
     private var recentStations = ArrayList<Station>()
     private lateinit var btnRecentTab: Button
+    private lateinit var btnTrackHistoryTab: Button
     private var currentAudioCodec = ""
     private var currentAudioBitrate = 0
     private var currentAudioSampleRate = 0
@@ -362,6 +363,13 @@ class MainActivity : AppCompatActivity() {
             layoutParams = btnParams
             visibility = if (settings.stationHistoryEnabled) View.VISIBLE else View.GONE
         }
+        btnTrackHistoryTab = Button(this).apply {
+            text = getStr("История треков", "Parça Geçmişi")
+            isAllCaps = false
+            layoutParams = btnParams
+            visibility = if (settings.trackHistoryEnabled) View.VISIBLE else View.GONE
+            setOnClickListener { showTrackHistoryDialog() }
+        }
         
         navLayout.addView(btnSearchTab)
         navLayout.addView(btnCountriesTab)
@@ -370,6 +378,7 @@ class MainActivity : AppCompatActivity() {
         navLayout.addView(btnFavTab)
         navLayout.addView(btnCustomTab)
         navLayout.addView(btnRecentTab)
+        navLayout.addView(btnTrackHistoryTab)
 
         listView = ListView(this)
         listAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, ArrayList()) {
@@ -613,6 +622,7 @@ class MainActivity : AppCompatActivity() {
                 navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 btnRecentTab.visibility = if (settings.stationHistoryEnabled) View.VISIBLE else View.GONE
+                btnTrackHistoryTab.visibility = if (settings.trackHistoryEnabled) View.VISIBLE else View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(false)
                 supportActionBar?.title = "Radio Player"
             }
@@ -686,7 +696,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, getStr("Настройки", "Ayarlar"))
         menu.add(0, 3, 0, getStr("Добавить станцию", "İstasyon Ekle"))
-        menu.add(0, 5, 0, getStr("История треков", "Parça Geçmişi"))
         menu.add(0, 6, 0, getStr("Очистить историю", "Geçmişi Temizle"))
         menu.add(0, 4, 0, getStr("Экспорт в M3U", "M3U Olarak Dışa Aktar"))
         menu.add(0, 2, 0, getStr("Выход", "Çıkış"))
@@ -699,7 +708,6 @@ class MainActivity : AppCompatActivity() {
         if (showMenu) {
             menu.findItem(3)?.isVisible = (currentMode == "CUSTOM_STATIONS")
             menu.findItem(4)?.isVisible = (currentMode == "CUSTOM_STATIONS" || currentMode == "FAVORITES")
-            menu.findItem(5)?.isVisible = settings.trackHistoryEnabled
             menu.findItem(6)?.isVisible = (currentMode == "RECENT_STATIONS" && recentStations.isNotEmpty())
         }
         return super.onPrepareOptionsMenu(menu)
@@ -720,7 +728,6 @@ class MainActivity : AppCompatActivity() {
                 }
                 exportStationsToM3u(toExport, "radio_playlist.m3u")
             }
-            5 -> showTrackHistoryDialog()
             6 -> clearStationHistoryDialog()
         }
         return super.onOptionsItemSelected(item)
@@ -828,7 +835,7 @@ class MainActivity : AppCompatActivity() {
             isChecked = settings.trackHistoryEnabled
             setOnCheckedChangeListener { _, isCheckedVal ->
                 settings.trackHistoryEnabled = isCheckedVal
-                invalidateOptionsMenu()
+                btnTrackHistoryTab.visibility = if (isCheckedVal) View.VISIBLE else View.GONE
             }
         }
         layout.addView(trackHistSwitch)
@@ -854,10 +861,6 @@ class MainActivity : AppCompatActivity() {
         backupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Экспорт", "Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportFavoritesLauncher.launch("radio_favorites.json") } })
         backupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Импорт", "İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { importFavoritesLauncher.launch(arrayOf("*/*")) } })
         layout.addView(backupLayout)
-        val m3uBackupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        m3uBackupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Экспорт в M3U", "M3U Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportStationsToM3u(favorites, "radio_favorites.m3u") } })
-        m3uBackupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Импорт из M3U", "M3U İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { m3uImportTarget = "FAVORITES"; importM3uLauncher.launch(arrayOf("*/*")) } })
-        layout.addView(m3uBackupLayout)
 
         addHeader(getStr("Фоновый режим и батарея", "Arka Plan ve Pil"))
         layout.addView(Button(this).apply {
@@ -976,25 +979,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun showStationInfo(station: Station) {
         val isCurrentPlaying = currentStationIndex != -1 && currentPlaylist.isNotEmpty() && currentPlaylist[currentStationIndex].url == station.url
-        val sb = StringBuilder()
-        sb.append(getStr("Название: ", "Adı: ")).append(station.name).append("\n")
+        val items = mutableListOf<String>()
+        items.add(getStr("Название: ", "Adı: ") + station.name)
         if (station.country.isNotEmpty()) {
-            sb.append(getStr("Страна: ", "Ülke: ")).append(station.country).append("\n")
+            items.add(getStr("Страна: ", "Ülke: ") + station.country)
         }
-        sb.append("URL: ").append(station.url)
+        items.add("URL: " + station.url)
         if (isCurrentPlaying) {
             if (currentAudioCodec.isNotEmpty()) {
-                sb.append("\n").append(getStr("Аудиокодек: ", "Ses Kodeği: ")).append(currentAudioCodec)
+                items.add(getStr("Аудиокодек: ", "Ses Kodeği: ") + currentAudioCodec)
             }
             if (currentAudioBitrate > 0) {
-                sb.append("\n").append(getStr("Битрейт: ", "Bit Hızı: ")).append("$currentAudioBitrate kbps")
+                items.add(getStr("Битрейт: ", "Bit Hızı: ") + "$currentAudioBitrate kbps")
             }
             if (currentAudioSampleRate > 0) {
                 val chanStr = if (currentAudioChannels == 1) getStr("Моно", "Mono") else getStr("Стерео", "Stereo")
-                sb.append("\n").append(getStr("Формат звука: ", "Ses Formatı: ")).append("$currentAudioSampleRate Hz, $chanStr")
+                items.add(getStr("Формат звука: ", "Ses Formatı: ") + "$currentAudioSampleRate Hz, $chanStr")
             }
         }
-        AlertDialog.Builder(this).setTitle(getStr("Информация о станции", "İstasyon Bilgisi")).setMessage(sb.toString()).setPositiveButton("OK", null).show()
+
+        val titles = items.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Информация о станции", "İstasyon Bilgisi"))
+            .setItems(titles) { _, which ->
+                val selected = titles[which]
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Station Info", selected))
+                Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + selected, Toast.LENGTH_SHORT).show()
+            }
+            .setPositiveButton(getStr("Закрыть", "Kapat"), null)
+            .show()
     }
 
     private fun updateSongInfo(title: String) {
