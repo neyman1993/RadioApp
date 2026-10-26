@@ -3,6 +3,7 @@ package com.neyman.radio_player
 import android.Manifest
 import android.app.AlertDialog
 import android.content.*
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -58,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var currentAudioChannels = 0
 
     private lateinit var navLayout: LinearLayout
+    private lateinit var navScroll: ScrollView
     private lateinit var listView: ListView
     private lateinit var settingsScroll: ScrollView
     private lateinit var listAdapter: ArrayAdapter<String>
@@ -111,7 +113,7 @@ class MainActivity : AppCompatActivity() {
                     val name = intent.getStringExtra("name") ?: ""
                     if (name.isNotEmpty()) {
                         stationNameText.text = name
-                        btnPlayPause.text = getStr("Пауза", "Duraklat")
+                        btnPlayPause.text = "⏸ " + getStr("Пауза", "Duraklat")
                     }
                 }
                 "com.neyman.radio.METADATA" -> {
@@ -120,14 +122,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 "com.neyman.radio.STATE" -> {
                     val isPlaying = intent.getBooleanExtra("isPlaying", false)
-                    btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat")
+                    btnPlayPause.text = if (isPlaying) "⏸ " + getStr("Пауза", "Duraklat") else "▶ " + getStr("Играть", "Oynat")
                 }
                 "com.neyman.radio.ERROR" -> {
                     val errCode = intent.getIntExtra("error_code", -1)
                     val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     val errText = if (errCode != -1) " (Code: $errCode)" else ""
                     stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName + errText
-                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
+                    btnPlayPause.text = "▶ " + getStr("Играть", "Oynat")
                     stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
                 }
                 "com.neyman.radio.AUDIO_INFO" -> {
@@ -142,11 +144,11 @@ class MainActivity : AppCompatActivity() {
                     val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     val msg = getStr("Переподключение ($attempt/$max): ", "Yeniden bağlanıyor ($attempt/$max): ") + stName
                     stationNameText.text = msg
-                    btnPlayPause.text = getStr("Загрузка...", "Yükleniyor...")
+                    btnPlayPause.text = "⏳ " + getStr("Загрузка...", "Yükleniyor...")
                     stationNameText.announceForAccessibility(msg)
                 }
                 "com.neyman.radio.UNPLUGGED" -> {
-                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
+                    btnPlayPause.text = "▶ " + getStr("Играть", "Oynat")
                     val msg = getStr("Наушники отключены. Воспроизведение на паузе.", "Kulaklık çıkarıldı. Oynatma duraklatıldı.")
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
                     stationNameText.announceForAccessibility(msg)
@@ -303,13 +305,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
+
+    private fun isNightModeActive(): Boolean {
+        val currentNightMode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        return currentNightMode == Configuration.UI_MODE_NIGHT_YES
+    }
+
     private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        settings = SettingsManager(this)
+        settings.applyTheme()
         super.onCreate(savedInstanceState)
         
-        settings = SettingsManager(this)
-        settings.applySettings()
         isTr = Locale.getDefault().language == "tr"
         favorites = settings.loadFavorites()
         customStations = settings.loadCustomStations()
@@ -406,6 +415,8 @@ class MainActivity : AppCompatActivity() {
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(103, getStr("Информация", "Bilgi")))
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(104, getStr("Поделиться", "Paylaş")))
                             info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(105, getStr("Экспортировать в M3U", "M3U olarak dışa aktar")))
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(112, getStr("Искать песню в Spotify", "Şarkıyı Spotify'da Ara")))
+                            info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(113, getStr("Искать песню в Deezer", "Şarkıyı Deezer'da Ara")))
                             if (currentMode == "CUSTOM_STATIONS") {
                                 info.addAction(AccessibilityNodeInfoCompat.AccessibilityActionCompat(106, getStr("Удалить из пользовательских", "Kullanıcı istasyonlarından sil")))
                             }
@@ -431,6 +442,16 @@ class MainActivity : AppCompatActivity() {
                                 103 -> { showStationInfo(station); return true }
                                 104 -> { shareStation(station); return true }
                                 105 -> { exportStationsToM3u(listOf(station), "${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}.m3u"); return true }
+                                112 -> {
+                                    val track = if (currentStationIndex != -1 && currentPlaylist.getOrNull(currentStationIndex)?.url == station.url && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+                                    openSpotifySearch(track)
+                                    return true
+                                }
+                                113 -> {
+                                    val track = if (currentStationIndex != -1 && currentPlaylist.getOrNull(currentStationIndex)?.url == station.url && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+                                    openDeezerSearch(track)
+                                    return true
+                                }
                                 106 -> { if (currentMode == "CUSTOM_STATIONS") { removeCustomStation(station); return true } }
                                 107 -> {
                                     if (currentMode == "FAVORITES") {
@@ -479,27 +500,78 @@ class MainActivity : AppCompatActivity() {
         settingsScroll = ScrollView(this).apply { visibility = View.GONE }
         settingsScroll.addView(createSettingsLayout())
 
+        val isNight = isNightModeActive()
         miniPlayerLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24)
-            setBackgroundColor(Color.parseColor("#333333"))
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8))
+            setBackgroundColor(if (isNight) Color.parseColor("#212121") else Color.parseColor("#ECEFF1"))
         }
 
         stationNameText = TextView(this).apply {
             text = getStr("Радио не выбрано", "Radyo seçilmedi")
-            textSize = 16f; setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
-            gravity = Gravity.CENTER; setPadding(0, 0, 0, 16)
-            isFocusable = true; setOnClickListener { showMiniPlayerMenu() }
+            textSize = 18f
+            setTextColor(if (isNight) Color.WHITE else Color.parseColor("#111111"))
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(6))
+            isFocusable = true
+            contentDescription = getStr("Текущая станция. Нажмите для меню управления", "Mevcut istasyon. Kontrol menüsü için tıklayın")
+            setOnClickListener { showMiniPlayerMenu() }
         }
         
-        val controlsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        val btnPrevBtn = Button(this).apply { text = getStr("Предыдущий", "Önceki"); isAllCaps = false; setOnClickListener { playPrev() } }
-        btnPlayPause = Button(this).apply { text = getStr("Воспроизвести", "Oynat"); isAllCaps = false; setOnClickListener { togglePlayPause() } }
-        val btnNextBtn = Button(this).apply { text = getStr("Следующий", "Sonraki"); isAllCaps = false; setOnClickListener { playNext() } }
-        
-        controlsLayout.addView(btnPrevBtn); controlsLayout.addView(btnPlayPause); controlsLayout.addView(btnNextBtn)
-        miniPlayerLayout.addView(stationNameText); miniPlayerLayout.addView(controlsLayout)
+        val controlsLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val btnControlParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(dpToPx(4), dpToPx(2), dpToPx(4), dpToPx(4))
+        }
 
-        mainLayout.addView(navLayout)
+        val btnPrevBtn = Button(this).apply {
+            text = "⏮ " + getStr("Назад", "Geri")
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            isAllCaps = false
+            minHeight = dpToPx(56)
+            setPadding(dpToPx(4), dpToPx(12), dpToPx(4), dpToPx(12))
+            layoutParams = btnControlParams
+            contentDescription = getStr("Предыдущая станция", "Önceki istasyon")
+            setOnClickListener { playPrev() }
+        }
+        btnPlayPause = Button(this).apply {
+            text = "▶ " + getStr("Играть", "Oynat")
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            isAllCaps = false
+            minHeight = dpToPx(56)
+            setPadding(dpToPx(4), dpToPx(12), dpToPx(4), dpToPx(12))
+            layoutParams = btnControlParams
+            contentDescription = getStr("Воспроизведение и пауза", "Oynat ve duraklat")
+            setOnClickListener { togglePlayPause() }
+        }
+        val btnNextBtn = Button(this).apply {
+            text = "⏭ " + getStr("Вперед", "İleri")
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            isAllCaps = false
+            minHeight = dpToPx(56)
+            setPadding(dpToPx(4), dpToPx(12), dpToPx(4), dpToPx(12))
+            layoutParams = btnControlParams
+            contentDescription = getStr("Следующая станция", "Sonraki istasyon")
+            setOnClickListener { playNext() }
+        }
+        
+        controlsLayout.addView(btnPrevBtn)
+        controlsLayout.addView(btnPlayPause)
+        controlsLayout.addView(btnNextBtn)
+        miniPlayerLayout.addView(stationNameText)
+        miniPlayerLayout.addView(controlsLayout)
+
+        navScroll = ScrollView(this).apply { isFillViewport = true }
+        navScroll.addView(navLayout, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        mainLayout.addView(navScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         countrySearchLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -522,10 +594,10 @@ class MainActivity : AppCompatActivity() {
             })
         }
         countrySearchLayout.addView(countrySearchEdit)
-        mainLayout.addView(countrySearchLayout)
+        mainLayout.addView(countrySearchLayout, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         mainLayout.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         mainLayout.addView(settingsScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        mainLayout.addView(miniPlayerLayout)
+        mainLayout.addView(miniPlayerLayout, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         
         setContentView(mainLayout)
         updateUIForMode()
@@ -619,7 +691,7 @@ class MainActivity : AppCompatActivity() {
         countrySearchLayout.visibility = View.GONE
         when (currentMode) {
             "MAIN_MENU" -> { 
-                navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.VISIBLE; navLayout.visibility = View.VISIBLE; listView.visibility = View.GONE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 btnRecentTab.visibility = if (settings.stationHistoryEnabled) View.VISIBLE else View.GONE
                 btnTrackHistoryTab.visibility = if (settings.trackHistoryEnabled) View.VISIBLE else View.GONE
@@ -627,64 +699,64 @@ class MainActivity : AppCompatActivity() {
                 supportActionBar?.title = "Radio Player"
             }
             "SEARCH_RESULTS" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Результаты поиска", "Arama Sonuçları") 
             }
             "COUNTRIES" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
                 countrySearchEdit.hint = getStr("Поиск страны...", "Ülke ara...")
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Страны", "Ülkeler") 
             }
             "GENRES" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Жанры", "Türler") 
             }
             "STATIONS_OF_COUNTRY" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
                 countrySearchEdit.hint = getStr("Поиск станции...", "İstasyon ara...")
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = currentCountryName 
             }
             "STATIONS_OF_GENRE" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = currentGenreName 
             }
             "TOP_STATIONS" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Популярные станции", "Popüler İstasyonlar") 
             }
             "FAVORITES" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Избранное", "Favoriler") 
             }
             "CUSTOM_STATIONS" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE; countrySearchLayout.visibility = View.VISIBLE
                 countrySearchEdit.hint = getStr("Поиск среди своих станций...", "Kullanıcı istasyonlarında ara...")
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Пользовательские станции", "Kullanıcı İstasyonları") 
             }
             "RECENT_STATIONS" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.VISIBLE; settingsScroll.visibility = View.GONE
                 miniPlayerLayout.visibility = View.VISIBLE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("История станций", "Son Çalınan İstasyonlar") 
             }
             "SETTINGS" -> { 
-                navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
+                navScroll.visibility = View.GONE; navLayout.visibility = View.GONE; listView.visibility = View.GONE; settingsScroll.visibility = View.VISIBLE
                 miniPlayerLayout.visibility = View.GONE
                 supportActionBar?.setDisplayHomeAsUpEnabled(true)
                 supportActionBar?.title = getStr("Настройки", "Ayarlar") 
@@ -778,6 +850,118 @@ class MainActivity : AppCompatActivity() {
         layout.addView(btn)
     }
 
+    private fun notifyEqUpdated() {
+        try {
+            val intent = Intent(this, PlaybackService::class.java).apply {
+                action = "UPDATE_EQ"
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun getEqPresetDisplayName(preset: String): String {
+        return when (preset) {
+            "Flat" -> getStr("Обычный (Flat)", "Düz (Flat)")
+            "Bass Boost" -> getStr("Усиление басов", "Bas Güçlendirme")
+            "Rock" -> getStr("Рок", "Rock")
+            "Pop" -> getStr("Поп", "Pop")
+            "Jazz" -> getStr("Джаз", "Caz")
+            "Classical" -> getStr("Классика", "Klasik")
+            "Vocal" -> getStr("Вокал", "Vokal")
+            "Electronic" -> getStr("Электронная", "Elektronik")
+            "Custom" -> getStr("Пользовательский", "Özel")
+            else -> preset
+        }
+    }
+
+    private fun showEqPresetsDialog(onPresetSelected: (String) -> Unit) {
+        val presets = SettingsManager.PRESET_NAMES
+        val displayNames = presets.map { getEqPresetDisplayName(it) }.toTypedArray()
+        val currentIndex = presets.indexOf(settings.eqPreset).takeIf { it >= 0 } ?: 0
+        
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Предустановки эквалайзера", "Ekolayzer Ön Ayarları"))
+            .setSingleChoiceItems(displayNames, currentIndex) { dialog, which ->
+                val chosen = presets[which]
+                settings.applyPreset(chosen)
+                notifyEqUpdated()
+                onPresetSelected(chosen)
+                dialog.dismiss()
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
+    }
+
+    private fun showEqManualDialog(onBandsChanged: () -> Unit) {
+        val bandNamesRu = arrayOf("60 Гц (Глубокий бас)", "230 Гц (Бас)", "910 Гц (Средние)", "3.6 кГц (Высокие средние)", "14 кГц (Высокие)")
+        val bandNamesTr = arrayOf("60 Hz (Derin Bas)", "230 Hz (Bas)", "910 Hz (Orta)", "3.6 kHz (Üst Orta)", "14 kHz (Tiz)")
+        
+        val dialogLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(24), dpToPx(16), dpToPx(24), dpToPx(16))
+        }
+        val dialogScroll = ScrollView(this).apply { addView(dialogLayout) }
+        
+        val bands = settings.getEqBands()
+        val valueLabels = mutableListOf<TextView>()
+        val seekBars = mutableListOf<SeekBar>()
+        
+        for (i in 0 until 5) {
+            val bandLabel = TextView(this).apply {
+                text = getStr(bandNamesRu[i], bandNamesTr[i])
+                textSize = 14f
+                setTypeface(null, Typeface.BOLD)
+                setPadding(0, dpToPx(8), 0, dpToPx(2))
+            }
+            val gainVal = bands[i].toInt()
+            val gainText = if (gainVal > 0) "+$gainVal dB" else "$gainVal dB"
+            val valLabel = TextView(this).apply {
+                text = gainText
+                textSize = 13f
+            }
+            valueLabels.add(valLabel)
+            
+            val seekBar = SeekBar(this).apply {
+                max = 24
+                progress = (bands[i] + 12f).toInt().coerceIn(0, 24)
+                contentDescription = getStr(bandNamesRu[i], bandNamesTr[i])
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                        if (fromUser) {
+                            val g = progress - 12
+                            bands[i] = g.toFloat()
+                            valLabel.text = if (g > 0) "+$g dB" else "$g dB"
+                            settings.saveEqBands(bands)
+                            settings.eqPreset = "Custom"
+                            notifyEqUpdated()
+                            onBandsChanged()
+                        }
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) {}
+                })
+            }
+            seekBars.add(seekBar)
+            
+            dialogLayout.addView(bandLabel)
+            dialogLayout.addView(valLabel)
+            dialogLayout.addView(seekBar)
+        }
+        
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Ручная настройка (5 полос)", "Manuel Ayar (5 Bant)"))
+            .setView(dialogScroll)
+            .setNeutralButton(getStr("Сбросить в 0", "Sıfırla")) { _, _ ->
+                settings.applyPreset("Flat")
+                notifyEqUpdated()
+                onBandsChanged()
+            }
+            .setPositiveButton(getStr("Готово", "Tamam"), null)
+            .show()
+    }
+
     private fun createSettingsLayout(): LinearLayout {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 32, 32, 32) }
         fun addHeader(text: String) { layout.addView(TextView(this).apply { this.text = text; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, 24, 0, 8) }) }
@@ -789,6 +973,45 @@ class MainActivity : AppCompatActivity() {
         addSettingItem(layout, getStr("Язык приложения", "Uygulama Dili"), arrayOf(getStr("Системный", "Sistem"), "Русский", "Türkçe"), arrayOf("system", "ru", "tr"), { settings.getLanguage() }) { newLang ->
             settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang))
         }
+
+        addHeader(getStr("Эквалайзер звука (5 полос)", "Ses Ekolayzeri (5 Bant)"))
+        val eqSwitch = Switch(this).apply {
+            isChecked = settings.eqEnabled
+            text = getStr("Включить эквалайзер", "Ekolayzeri Etkinleştir")
+            setOnCheckedChangeListener { _, isCheckedVal ->
+                settings.eqEnabled = isCheckedVal
+                notifyEqUpdated()
+                val msg = if (isCheckedVal) getStr("Эквалайзер включен", "Ekolayzer etkin") else getStr("Эквалайзер выключен", "Ekolayzer kapalı")
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+        layout.addView(eqSwitch)
+
+        val btnEqPresets = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Предустановка: ", "Ön ayar: ") + getEqPresetDisplayName(settings.eqPreset)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(40, 32, 40, 32)
+        }
+        btnEqPresets.setOnClickListener {
+            showEqPresetsDialog { chosenPreset ->
+                btnEqPresets.text = getStr("Предустановка: ", "Ön ayar: ") + getEqPresetDisplayName(chosenPreset)
+            }
+        }
+        layout.addView(btnEqPresets)
+
+        val btnEqManual = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Ручная настройка 5 полос...", "Manuel 5 Bant Ayarı...")
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(40, 32, 40, 32)
+            setOnClickListener {
+                showEqManualDialog {
+                    btnEqPresets.text = getStr("Предустановка: ", "Ön ayar: ") + getEqPresetDisplayName(settings.eqPreset)
+                }
+            }
+        }
+        layout.addView(btnEqManual)
 
         addHeader(getStr("Автоматическое воспроизведение при запуске", "Başlangıçta otomatik oynat"))
         val autoplaySwitch = Switch(this).apply { 
@@ -885,6 +1108,10 @@ class MainActivity : AppCompatActivity() {
         actions.add(Pair(getStr("Скопировать название песни", "Şarkı adını kopyala")) {
             copySongMetadata(station)
         })
+        val trackToSearch = if (currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        actions.add(Pair(getStr("Найти песню (Spotify, Deezer...)", "Şarkıyı ara (Spotify, Deezer...)")) {
+            showTrackActionDialog(trackToSearch)
+        })
         actions.add(Pair(if (isFav) getStr("Удалить из избранного", "Favorilerden çıkar") else getStr("Добавить в избранное", "Favorilere ekle")) {
             toggleFavorite(station)
         })
@@ -933,6 +1160,10 @@ class MainActivity : AppCompatActivity() {
         })
         actions.add(Pair(getStr("Скопировать название песни", "Şarkı adını kopyala")) {
             copySongMetadata(station)
+        })
+        val listTrackToSearch = if (currentStationIndex != -1 && currentPlaylist.getOrNull(currentStationIndex)?.url == station.url && currentSongMetadata.isNotEmpty()) currentSongMetadata else station.name
+        actions.add(Pair(getStr("Найти песню (Spotify, Deezer...)", "Şarkıyı ara (Spotify, Deezer...)")) {
+            showTrackActionDialog(listTrackToSearch)
         })
         actions.add(Pair(getStr("Экспортировать станцию в M3U", "İstasyonu M3U olarak dışa aktar")) {
             exportStationsToM3u(listOf(station), "${station.name.replace(Regex("[^a-zA-Z0-9.-]"), "_")}.m3u")
@@ -1111,7 +1342,7 @@ class MainActivity : AppCompatActivity() {
                 currentTitle = if (line.contains(",")) {
                     line.substringAfterLast(",").trim()
                 } else {
-                    val tvgMatch = Regex("""tvg-name="([^"]+)"""", RegexOption.IGNORE_CASE).find(line)
+                    val tvgMatch = Regex("tvg-name=\"([^\"]+)\"", RegexOption.IGNORE_CASE).find(line)
                     tvgMatch?.groupValues?.get(1)?.trim() ?: ""
                 }
             } else if (!line.startsWith("#")) {
@@ -1206,42 +1437,107 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun openSpotifySearch(track: String) {
+        val query = track.trim()
+        if (query.isEmpty()) return
+        try {
+            val uri = Uri.parse("spotify:search:" + Uri.encode(query))
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val webUri = Uri.parse("https://open.spotify.com/search/" + URLEncoder.encode(query, "UTF-8"))
+                val webIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(webIntent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, getStr("Не удалось открыть Spotify", "Spotify açılamadı"), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun openDeezerSearch(track: String) {
+        val query = track.trim()
+        if (query.isEmpty()) return
+        try {
+            val uri = Uri.parse("deezer-query://www.deezer.com/search/" + Uri.encode(query))
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val webUri = Uri.parse("https://www.deezer.com/search/" + URLEncoder.encode(query, "UTF-8"))
+                val webIntent = Intent(Intent.ACTION_VIEW, webUri).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(webIntent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, getStr("Не удалось открыть Deezer", "Deezer açılamadı"), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun openYouTubeSearch(track: String) {
+        val query = track.trim()
+        if (query.isEmpty()) return
+        try {
+            val ytIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8"))).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(ytIntent)
+        } catch (e: Exception) {
+            Toast.makeText(this, getStr("Ошибка открытия YouTube", "YouTube açma hatası"), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun openWebSearch(track: String) {
+        val query = track.trim()
+        if (query.isEmpty()) return
+        try {
+            val webIntent = Intent(Intent.ACTION_WEB_SEARCH).apply {
+                putExtra(android.app.SearchManager.QUERY, query)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(webIntent)
+        } catch (e: Exception) {
+            try {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + URLEncoder.encode(query, "UTF-8"))).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(browserIntent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, getStr("Ошибка открытия поиска", "Arama açma hatası"), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun copyTrackTitle(track: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Track Info", track))
+        Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + track, Toast.LENGTH_SHORT).show()
+    }
+
     private fun showTrackActionDialog(track: String) {
         val options = arrayOf(
-            getStr("Скопировать название", "Şarkı adını kopyala"),
+            getStr("Искать в Spotify", "Spotify'da Ara"),
+            getStr("Искать в Deezer", "Deezer'da Ara"),
             getStr("Искать на YouTube", "YouTube'da Ara"),
-            getStr("Искать в браузере", "İnternette Ara")
+            getStr("Искать в браузере", "İnternette Ara"),
+            getStr("Скопировать название", "Şarkı adını kopyala")
         )
         AlertDialog.Builder(this)
             .setTitle(track)
             .setItems(options) { _, which ->
                 when (which) {
-                    0 -> {
-                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Track Info", track))
-                        Toast.makeText(this, getStr("Скопировано: ", "Kopyalandı: ") + track, Toast.LENGTH_SHORT).show()
-                    }
-                    1 -> {
-                        try {
-                            val ytIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(track, "UTF-8")))
-                            startActivity(ytIntent)
-                        } catch (e: Exception) {
-                            Toast.makeText(this, getStr("Ошибка открытия YouTube", "YouTube açma hatası"), Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    2 -> {
-                        try {
-                            val webIntent = Intent(Intent.ACTION_WEB_SEARCH).apply {
-                                putExtra(android.app.SearchManager.QUERY, track)
-                            }
-                            startActivity(webIntent)
-                        } catch (e: Exception) {
-                            try {
-                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + URLEncoder.encode(track, "UTF-8")))
-                                startActivity(browserIntent)
-                            } catch (e2: Exception) {}
-                        }
-                    }
+                    0 -> openSpotifySearch(track)
+                    1 -> openDeezerSearch(track)
+                    2 -> openYouTubeSearch(track)
+                    3 -> openWebSearch(track)
+                    4 -> copyTrackTitle(track)
                 }
             }
             .setNegativeButton(getStr("Отмена", "İptal"), null)
@@ -1414,6 +1710,7 @@ private fun showSearchDialog() {
         currentAudioChannels = 0
         
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
+        btnPlayPause.text = "⏳ " + getStr("Загрузка...", "Yükleniyor...")
         currentSongMetadata = ""
         
         val intent = Intent(this, PlaybackService::class.java).apply {

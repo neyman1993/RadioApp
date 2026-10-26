@@ -53,6 +53,8 @@ import javax.net.ssl.X509TrustManager
 class PlaybackService : Service() {
 
     private var streamHandle = 0
+    private val eqFxHandles = IntArray(5)
+    private val eqFrequencies = floatArrayOf(60f, 230f, 910f, 3600f, 14000f)
     private lateinit var mediaSession: MediaSessionCompat
     private var currentUrl: String = ""
     private var currentStationName: String = ""
@@ -293,7 +295,7 @@ class PlaybackService : Service() {
 
             if (isM3u8Content) {
                 val playlistText = rawIn.bufferedReader(Charsets.UTF_8).readText()
-                val uriAttrRegex = Regex("""URI="([^"]+)"""")
+                val uriAttrRegex = Regex("URI=\"([^\"]+)\"")
                 val rewrittenLines = ArrayList<String>()
 
                 for (rawLine in playlistText.lines()) {
@@ -614,6 +616,7 @@ class PlaybackService : Service() {
         if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) != BASS.BASS_ACTIVE_PLAYING) {
             requestAudioFocus()
             registerNoisyReceiver()
+            applyEqualizerSettings()
             BASS.BASS_ChannelPlay(streamHandle, false)
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
@@ -665,6 +668,7 @@ class PlaybackService : Service() {
                 startBassPlayback()
             }
             "TOGGLE" -> togglePlayback()
+            "UPDATE_EQ" -> applyEqualizerSettings()
             "STOP_SERVICE" -> stopServiceAndApp()
         }
         return START_NOT_STICKY
@@ -692,6 +696,36 @@ class PlaybackService : Service() {
         } catch (e: Exception) { }
         return url
     }
+    private fun applyEqualizerSettings() {
+        if (streamHandle == 0) return
+        val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+        val enabled = sp.getBoolean("eq_enabled", false)
+        
+        if (!enabled) {
+            for (i in eqFxHandles.indices) {
+                if (eqFxHandles[i] != 0) {
+                    BASS.BASS_ChannelRemoveFX(streamHandle, eqFxHandles[i])
+                    eqFxHandles[i] = 0
+                }
+            }
+            return
+        }
+
+        for (i in 0 until 5) {
+            if (eqFxHandles[i] == 0) {
+                eqFxHandles[i] = BASS.BASS_ChannelSetFX(streamHandle, BASS.BASS_FX_DX8_PARAMEQ, i)
+            }
+            if (eqFxHandles[i] != 0) {
+                val gain = sp.getFloat("eq_band_$i", 0f)
+                val p = BASS.BASS_DX8_PARAMEQ()
+                p.fCenter = eqFrequencies[i]
+                p.fBandwidth = 18f
+                p.fGain = gain.coerceIn(-15f, 15f)
+                BASS.BASS_FXSetParameters(eqFxHandles[i], p)
+            }
+        }
+    }
+
     private fun startBassPlayback() {
         metadataTimer?.cancel()
 
@@ -699,6 +733,7 @@ class PlaybackService : Service() {
             if (streamHandle != 0) {
                 BASS.BASS_StreamFree(streamHandle)
                 streamHandle = 0
+                eqFxHandles.fill(0)
             }
 
             val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
@@ -766,6 +801,7 @@ class PlaybackService : Service() {
 
             requestAudioFocus()
             registerNoisyReceiver()
+            applyEqualizerSettings()
             BASS.BASS_ChannelPlay(streamHandle, false)
             reconnectAttempts = 0
             isReconnecting = false

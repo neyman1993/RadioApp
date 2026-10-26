@@ -15,7 +15,7 @@
         android:extractNativeLibs="true"
         android:label="Radio Player"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar"
+        android:theme="@style/Theme.RadioPlayer"
         android:usesCleartextTraffic="true">
         
         <activity

@@ -2,6 +2,7 @@ package com.neyman.radio_player
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.appcompat.app.AppCompatDelegate
 import org.json.JSONArray
 
 class SettingsManager(context: Context) {
@@ -55,14 +56,63 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("station_history_enabled", false)
         set(value) = prefs.edit().putBoolean("station_history_enabled", value).apply()
 
+    var eqEnabled: Boolean
+        get() = prefs.getBoolean("eq_enabled", false)
+        set(value) = prefs.edit().putBoolean("eq_enabled", value).apply()
+
+    var eqPreset: String
+        get() = prefs.getString("eq_preset", "flat") ?: "flat"
+        set(value) = prefs.edit().putString("eq_preset", value).apply()
+
+    fun getEqBands(): FloatArray {
+        val bands = FloatArray(5)
+        for (i in 0 until 5) {
+            bands[i] = prefs.getFloat("eq_band_$i", 0f)
+        }
+        return bands
+    }
+
+    fun saveEqBands(bands: FloatArray) {
+        val editor = prefs.edit()
+        for (i in 0 until 5) {
+            editor.putFloat("eq_band_$i", if (i < bands.size) bands[i] else 0f)
+        }
+        editor.apply()
+    }
+
+    fun applyPreset(preset: String) {
+        eqPreset = preset
+        val bands = when (preset) {
+            "bass_boost" -> floatArrayOf(8f, 5f, 0f, 0f, 0f)
+            "rock" -> floatArrayOf(5f, 3f, -1f, 3f, 6f)
+            "pop" -> floatArrayOf(-1f, 2f, 5f, 2f, -1f)
+            "jazz" -> floatArrayOf(4f, 2f, -2f, 2f, 4f)
+            "classical" -> floatArrayOf(5f, 3f, -2f, 4f, 4f)
+            "vocal" -> floatArrayOf(-2f, 1f, 5f, 3f, -1f)
+            "electronic" -> floatArrayOf(6f, 4f, 0f, 2f, 5f)
+            else -> floatArrayOf(0f, 0f, 0f, 0f, 0f)
+        }
+        saveEqBands(bands)
+    }
+
     fun getTheme(): String = prefs.getString("app_theme", "system") ?: "system"
     fun saveTheme(theme: String) = prefs.edit().putString("app_theme", theme).apply()
+
+    fun applyTheme(theme: String? = null) {
+        val t = theme ?: getTheme()
+        val mode = when (t) {
+            "light" -> AppCompatDelegate.MODE_NIGHT_NO
+            "dark" -> AppCompatDelegate.MODE_NIGHT_YES
+            else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+        }
+        AppCompatDelegate.setDefaultNightMode(mode)
+    }
 
     fun getLanguage(): String = prefs.getString("app_language", "system") ?: "system"
     fun saveLanguage(lang: String) = prefs.edit().putString("app_language", lang).apply()
 
     fun applySettings() {
-        // Здесь можно добавить логику применения темы, если нужно
+        applyTheme(getTheme())
     }
 
     fun saveFavorites(favorites: List<Station>) {
