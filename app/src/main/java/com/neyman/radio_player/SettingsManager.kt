@@ -48,6 +48,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("pause_on_unplug", false)
         set(value) = prefs.edit().putBoolean("pause_on_unplug", value).apply()
 
+    var fadeInOutEnabled: Boolean
+        get() = prefs.getBoolean("fade_in_out", true)
+        set(value) = prefs.edit().putBoolean("fade_in_out", value).apply()
+
     var trackHistoryEnabled: Boolean
         get() = prefs.getBoolean("track_history_enabled", false)
         set(value) = prefs.edit().putBoolean("track_history_enabled", value).apply()

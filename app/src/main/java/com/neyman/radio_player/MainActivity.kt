@@ -82,8 +82,6 @@ class MainActivity : AppCompatActivity() {
     private var currentSongMetadata = ""
     private var currentPlayingStationName = ""
 
-    private var sleepTimerHandler: Handler? = null
-    private var sleepRunnable: Runnable? = null
     private var isRecording = false
     private var recordThread: Thread? = null
 
@@ -1090,6 +1088,10 @@ class MainActivity : AppCompatActivity() {
         layout.addView(btnEqSetting)
         layout.addView(btnTuneCustom)
 
+        addSwitchSetting(layout, getStr("Плавное нарастание и затухание звука", "Sesin yumuşak açılması ve kısılması"), settings.fadeInOutEnabled) {
+            settings.fadeInOutEnabled = it
+        }
+
         addSwitchSetting(layout, getStr("Автовоспроизведение при запуске", "Başlangıçta otomatik oynat"), settings.autoplayAtStart) {
             settings.autoplayAtStart = it
         }
@@ -1217,8 +1219,17 @@ class MainActivity : AppCompatActivity() {
         actions.add(Pair(if (isRecording) getStr("Остановить запись", "Kaydı Durdur") else getStr("Начать запись потока", "Akışı Kaydet")) {
             toggleRecording()
         })
-        actions.add(Pair(if (sleepTimerHandler != null) getStr("Отменить таймер выключения", "Zamanlayıcıyı İptal Et") else getStr("Таймер выключения", "Kapanış Zamanlayıcısı")) {
-            if (sleepTimerHandler != null) cancelSleepTimer() else showTimerDialog() 
+        val timerTitle = if (PlaybackService.isSleepTimerActive) {
+            getStr("Отменить таймер сна (осталось ${PlaybackService.remainingSleepMinutes} мин)", "Kapanış zamanlayıcısını iptal et (${PlaybackService.remainingSleepMinutes} dk kaldı)")
+        } else {
+            getStr("Таймер сна", "Kapanış Zamanlayıcısı")
+        }
+        actions.add(Pair(timerTitle) {
+            if (PlaybackService.isSleepTimerActive) {
+                cancelServiceSleepTimer()
+            } else {
+                showTimerDialog()
+            }
         })
         actions.add(Pair(getStr("Информация о потоке и станции", "Akış ve İstasyon Bilgisi")) {
             showStationInfo(station)
@@ -1369,27 +1380,66 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showTimerDialog() {
-        val times = arrayOf("15 " + getStr("мин", "dk"), "30 " + getStr("мин", "dk"), "45 " + getStr("мин", "dk"), "60 " + getStr("мин", "dk"))
-        val values = arrayOf(15, 30, 45, 60)
-        AlertDialog.Builder(this).setTitle(getStr("Остановить через:", "Şu süre sonra durdur:"))
-            .setItems(times) { _, w -> startSleepTimer(values[w]) }
-            .setNegativeButton(getStr("Отмена", "İptal"), null).show()
+        val options = arrayOf(
+            "15 " + getStr("мин", "dk"),
+            "30 " + getStr("мин", "dk"),
+            "45 " + getStr("мин", "dk"),
+            "60 " + getStr("мин", "dk"),
+            "90 " + getStr("мин", "dk"),
+            getStr("Своё время (минут)...", "Özel süre (dakika)...")
+        )
+        val minutes = intArrayOf(15, 30, 45, 60, 90)
+
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Таймер сна (остановить через):", "Kapanış zamanlayıcısı:"))
+            .setItems(options) { _, which ->
+                if (which in minutes.indices) {
+                    val m = minutes[which]
+                    startServiceSleepTimer(m)
+                } else {
+                    showCustomTimerDialog()
+                }
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
     }
 
-    private fun startSleepTimer(minutes: Int) {
-        cancelSleepTimer()
-        sleepTimerHandler = Handler(Looper.getMainLooper())
-        sleepRunnable = Runnable { 
-            val stopIntent = Intent(this, PlaybackService::class.java).apply { action = "STOP_SERVICE" }
-            startService(stopIntent)
-            if (isRecording) toggleRecording() 
-            cancelSleepTimer() 
+    private fun showCustomTimerDialog() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = getStr("Количество минут", "Dakika sayısı")
         }
-        sleepTimerHandler?.postDelayed(sleepRunnable!!, minutes * 60 * 1000L)
-        Toast.makeText(this, getStr("Таймер установлен на $minutes мин.", "Zamanlayıcı $minutes dakikaya ayarlandı."), Toast.LENGTH_SHORT).show()
+        AlertDialog.Builder(this)
+            .setTitle(getStr("Своё время таймера", "Özel zamanlayıcı süresi"))
+            .setView(input)
+            .setPositiveButton("OK") { _, _ ->
+                val entered = input.text.toString().trim().toIntOrNull()
+                if (entered != null && entered > 0) {
+                    startServiceSleepTimer(entered)
+                } else {
+                    Toast.makeText(this, getStr("Введите корректное число минут", "Geçerli bir dakika sayısı girin"), Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(getStr("Отмена", "İptal"), null)
+            .show()
     }
 
-    private fun cancelSleepTimer() { sleepRunnable?.let { sleepTimerHandler?.removeCallbacks(it) }; sleepTimerHandler = null; sleepRunnable = null }
+    private fun startServiceSleepTimer(mins: Int) {
+        val intent = Intent(this, PlaybackService::class.java).apply {
+            action = "START_SLEEP_TIMER"
+            putExtra("minutes", mins)
+        }
+        startService(intent)
+        Toast.makeText(this, getStr("Таймер сна установлен на $mins мин.", "Zamanlayıcı $mins dakikaya ayarlandı."), Toast.LENGTH_SHORT).show()
+    }
+
+    private fun cancelServiceSleepTimer() {
+        val intent = Intent(this, PlaybackService::class.java).apply {
+            action = "CANCEL_SLEEP_TIMER"
+        }
+        startService(intent)
+        Toast.makeText(this, getStr("Таймер сна отменен", "Zamanlayıcı iptal edildi"), Toast.LENGTH_SHORT).show()
+    }
 
     private fun toggleRecording() {
         if (currentStationIndex == -1 || currentPlaylist.isEmpty()) return
@@ -2154,7 +2204,6 @@ private fun showSearchDialog() {
     override fun onDestroy() {
         unregisterReceiver(playbackReceiver)
         isRecording = false
-        cancelSleepTimer()
         super.onDestroy()
     }
 }

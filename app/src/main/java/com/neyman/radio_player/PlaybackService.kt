@@ -59,7 +59,16 @@ class PlaybackService : Service() {
             internal set
         var currentTitle: String = ""
             internal set
+        var sleepTimerEndTime: Long = 0L
+            internal set
+        val isSleepTimerActive: Boolean
+            get() = sleepTimerEndTime > System.currentTimeMillis()
+        val remainingSleepMinutes: Int
+            get() = if (isSleepTimerActive) ((sleepTimerEndTime - System.currentTimeMillis() + 59999) / 60000).toInt() else 0
     }
+
+    private val sleepTimerHandler = Handler(Looper.getMainLooper())
+    private var sleepTimerRunnable: Runnable? = null
 
     private var streamHandle = 0
     private val eqFxHandles = IntArray(5)
@@ -378,7 +387,7 @@ class PlaybackService : Service() {
                 if (isDucked) {
                     isDucked = false
                     if (streamHandle != 0) {
-                        BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1.0f)
+                        BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1.0f, 400)
                     }
                 } else if (pausedByFocus) {
                     pausedByFocus = false
@@ -402,7 +411,7 @@ class PlaybackService : Service() {
                 if (focusEnabled) {
                     isDucked = true
                     if (streamHandle != 0) {
-                        BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0.2f)
+                        BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0.2f, 300)
                     }
                 }
             }
@@ -612,13 +621,25 @@ class PlaybackService : Service() {
 
     private fun pausePlayback() {
         if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
-            BASS.BASS_ChannelPause(streamHandle)
             isPlaying = false
             updateSessionState(PlaybackStateCompat.STATE_PAUSED)
             showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
             val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", false) }
             sendLocalBroadcast(stateIntent)
             unregisterNoisyReceiver()
+
+            val settings = SettingsManager(this)
+            if (settings.fadeInOutEnabled) {
+                BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f, 400)
+                val h = streamHandle
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (streamHandle == h && !isPlaying) {
+                        BASS.BASS_ChannelPause(h)
+                    }
+                }, 400)
+            } else {
+                BASS.BASS_ChannelPause(streamHandle)
+            }
         }
     }
 
@@ -627,7 +648,15 @@ class PlaybackService : Service() {
             requestAudioFocus()
             registerNoisyReceiver()
             applyEqualizerSettings()
-            BASS.BASS_ChannelPlay(streamHandle, false)
+            val settings = SettingsManager(this)
+            if (settings.fadeInOutEnabled) {
+                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f)
+                BASS.BASS_ChannelPlay(streamHandle, false)
+                BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f, 1200)
+            } else {
+                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f)
+                BASS.BASS_ChannelPlay(streamHandle, false)
+            }
             isPlaying = true
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
@@ -683,8 +712,51 @@ class PlaybackService : Service() {
             "TOGGLE" -> togglePlayback()
             "UPDATE_EQ" -> applyEqualizerSettings()
             "STOP_SERVICE" -> stopServiceAndApp()
+            "START_SLEEP_TIMER" -> {
+                val mins = intent.getIntExtra("minutes", 0)
+                if (mins > 0) startSleepTimer(mins)
+            }
+            "CANCEL_SLEEP_TIMER" -> cancelSleepTimer()
         }
         return START_NOT_STICKY
+    }
+
+    private fun startSleepTimer(minutes: Int) {
+        cancelSleepTimer()
+        sleepTimerEndTime = System.currentTimeMillis() + minutes * 60 * 1000L
+        sleepTimerRunnable = Runnable {
+            onSleepTimerTriggered()
+        }
+        sleepTimerHandler.postDelayed(sleepTimerRunnable!!, minutes * 60 * 1000L)
+        broadcastSleepTimerState()
+    }
+
+    private fun cancelSleepTimer() {
+        sleepTimerRunnable?.let { sleepTimerHandler.removeCallbacks(it) }
+        sleepTimerRunnable = null
+        sleepTimerEndTime = 0L
+        broadcastSleepTimerState()
+    }
+
+    private fun onSleepTimerTriggered() {
+        cancelSleepTimer()
+        val settings = SettingsManager(this)
+        if (settings.fadeInOutEnabled && streamHandle != 0) {
+            BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f, 2500)
+            Handler(Looper.getMainLooper()).postDelayed({
+                stopServiceAndApp()
+            }, 2500)
+        } else {
+            stopServiceAndApp()
+        }
+    }
+
+    private fun broadcastSleepTimerState() {
+        val intent = Intent("com.neyman.radio.SLEEP_TIMER").apply {
+            putExtra("isActive", isSleepTimerActive)
+            putExtra("remainingMinutes", remainingSleepMinutes)
+        }
+        sendLocalBroadcast(intent)
     }
 
     private fun resolveStreamUrl(url: String): String {
@@ -816,7 +888,15 @@ class PlaybackService : Service() {
             requestAudioFocus()
             registerNoisyReceiver()
             applyEqualizerSettings()
-            BASS.BASS_ChannelPlay(streamHandle, false)
+            val settings = SettingsManager(this)
+            if (settings.fadeInOutEnabled) {
+                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f)
+                BASS.BASS_ChannelPlay(streamHandle, false)
+                BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f, 1200)
+            } else {
+                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f)
+                BASS.BASS_ChannelPlay(streamHandle, false)
+            }
             isPlaying = true
             currentStation = currentStationName
             currentTitle = currentSongTitle
@@ -1059,6 +1139,7 @@ class PlaybackService : Service() {
         isPlaying = false
         currentStation = ""
         currentTitle = ""
+        cancelSleepTimer()
         metadataTimer?.cancel()
         reconnectHandler.removeCallbacksAndMessages(null)
         unregisterNetworkCallback()
