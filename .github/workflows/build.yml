@@ -5,6 +5,9 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,9 +30,28 @@ jobs:
       with:
         name: Error-Log
         path: build_log.txt
-    - name: Upload APK
+    - name: Prepare Direct APK
+      if: success()
+      run: |
+        cp app/build/outputs/apk/debug/*.apk radio_player.apk
+    - name: Upload Artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: radio_player-Debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: radio_player
+        path: radio_player.apk
+    - name: Publish Direct APK Release
+      if: success()
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.5
+        name: "Radio Player v1.5"
+        body: |
+          ### Что нового в версии 1.5:
+          - Крупные кнопки плеера для слабовидящих, прижаты к низу экрана над системными кнопками
+          - Полноценная поддержка светлой и тёмной тем
+          - 5-полосный DSP-эквалайзер с пресетами и ручной регулировкой
+          - Поиск треков через Spotify, Deezer, YouTube и браузер
+        files: radio_player.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
