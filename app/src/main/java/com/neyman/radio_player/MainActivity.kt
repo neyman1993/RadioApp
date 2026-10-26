@@ -80,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var currentGenreName = ""
     private var isTr = false
     private var currentSongMetadata = ""
+    private var currentPlayingStationName = ""
 
     private var sleepTimerHandler: Handler? = null
     private var sleepRunnable: Runnable? = null
@@ -112,10 +113,21 @@ class MainActivity : AppCompatActivity() {
             when (intent?.action) {
                 "com.neyman.radio.READY" -> {
                     val name = intent.getStringExtra("name") ?: ""
+                    val title = intent.getStringExtra("title") ?: ""
                     if (name.isNotEmpty()) {
-                        stationNameText.text = name
-                        btnPlayPause.text = "⏸ " + getStr("Пауза", "Duraklat")
+                        currentPlayingStationName = name
                     }
+                    if (title.isNotEmpty()) {
+                        currentSongMetadata = title
+                    }
+                    val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName else name
+                    val displayText = if (currentSongMetadata.isNotEmpty() && !currentSongMetadata.equals(stName, ignoreCase = true)) {
+                        "$stName\n$currentSongMetadata"
+                    } else {
+                        stName
+                    }
+                    stationNameText.text = displayText
+                    btnPlayPause.text = "⏸ " + getStr("Пауза", "Duraklat")
                 }
                 "com.neyman.radio.METADATA" -> {
                     val title = intent.getStringExtra("title") ?: ""
@@ -679,6 +691,7 @@ class MainActivity : AppCompatActivity() {
 
         val lastStation = settings.getLastStation()
         if (lastStation != null) {
+            currentPlayingStationName = lastStation.name
             stationNameText.text = lastStation.name
             if (settings.autoplayAtStart) {
                 currentPlaylist = arrayListOf(lastStation)
@@ -877,19 +890,55 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showEqPresetsDialog(onPresetSelected: (String) -> Unit) {
-        val presets = SettingsManager.PRESET_NAMES
-        val displayNames: Array<CharSequence> = presets.map { getEqPresetDisplayName(it) as CharSequence }.toTypedArray()
-        val currentIndex = presets.indexOf(settings.eqPreset.lowercase(Locale.ROOT)).takeIf { it >= 0 } ?: 0
-        
+    private fun getEqSettingSummary(): String {
+        return if (!settings.eqEnabled) {
+            getStr("Эквалайзер: Выключен", "Ekolayzer: Kapalı")
+        } else {
+            getStr("Эквалайзер: ", "Ekolayzer: ") + getEqPresetDisplayName(settings.eqPreset)
+        }
+    }
+
+    private fun showEqSelectionDialog(onUpdated: () -> Unit) {
+        val options = arrayOf("off", "flat", "bass_boost", "rock", "pop", "jazz", "classical", "vocal", "electronic", "custom")
+        val displayNames: Array<CharSequence> = options.map { opt ->
+            if (opt == "off") getStr("Выключен", "Kapalı") as CharSequence
+            else getEqPresetDisplayName(opt) as CharSequence
+        }.toTypedArray()
+
+        val currentIndex = if (!settings.eqEnabled) {
+            0
+        } else {
+            val idx = options.indexOf(settings.eqPreset.lowercase(Locale.ROOT))
+            if (idx >= 0) idx else 1
+        }
+
         AlertDialog.Builder(this)
-            .setTitle(getStr("Предустановки эквалайзера", "Ekolayzer Ön Ayarları"))
+            .setTitle(getStr("Эквалайзер (5 полос)", "Ses Ekolayzeri (5 Bant)"))
             .setSingleChoiceItems(displayNames, currentIndex) { dialog: DialogInterface, which: Int ->
-                val chosen = presets[which]
-                settings.applyPreset(chosen)
-                notifyEqUpdated()
-                onPresetSelected(chosen)
-                dialog.dismiss()
+                val chosen = options[which]
+                if (chosen == "off") {
+                    settings.eqEnabled = false
+                    notifyEqUpdated()
+                    Toast.makeText(this, getStr("Эквалайзер выключен", "Ekolayzer kapalı"), Toast.LENGTH_SHORT).show()
+                    onUpdated()
+                    dialog.dismiss()
+                } else if (chosen == "custom") {
+                    settings.eqEnabled = true
+                    settings.eqPreset = "custom"
+                    notifyEqUpdated()
+                    onUpdated()
+                    dialog.dismiss()
+                    showEqManualDialog {
+                        onUpdated()
+                    }
+                } else {
+                    settings.eqEnabled = true
+                    settings.applyPreset(chosen)
+                    notifyEqUpdated()
+                    Toast.makeText(this, getStr("Эквалайзер: ", "Ekolayzer: ") + getEqPresetDisplayName(chosen), Toast.LENGTH_SHORT).show()
+                    onUpdated()
+                    dialog.dismiss()
+                }
             }
             .setNegativeButton(getStr("Отмена", "İptal"), null)
             .show()
@@ -955,7 +1004,8 @@ class MainActivity : AppCompatActivity() {
             .setTitle(getStr("Ручная настройка (5 полос)", "Manuel Ayar (5 Bant)"))
             .setView(dialogScroll)
             .setNeutralButton(getStr("Сбросить в 0", "Sıfırla")) { _, _ ->
-                settings.applyPreset("flat")
+                settings.saveEqBands(floatArrayOf(0f, 0f, 0f, 0f, 0f))
+                settings.eqPreset = "custom"
                 notifyEqUpdated()
                 onBandsChanged()
             }
@@ -976,43 +1026,37 @@ class MainActivity : AppCompatActivity() {
         }
 
         addHeader(getStr("Эквалайзер звука (5 полос)", "Ses Ekolayzeri (5 Bant)"))
-        val eqSwitch = Switch(this).apply {
-            isChecked = settings.eqEnabled
-            text = getStr("Включить эквалайзер", "Ekolayzeri Etkinleştir")
-            setOnCheckedChangeListener { _, isCheckedVal ->
-                settings.eqEnabled = isCheckedVal
-                notifyEqUpdated()
-                val msg = if (isCheckedVal) getStr("Эквалайзер включен", "Ekolayzer etkin") else getStr("Эквалайзер выключен", "Ekolayzer kapalı")
-                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
-            }
-        }
-        layout.addView(eqSwitch)
 
-        val btnEqPresets = Button(this).apply {
+        lateinit var btnTuneCustom: Button
+        val btnEqSetting = Button(this).apply {
             isAllCaps = false
-            text = getStr("Предустановка: ", "Ön ayar: ") + getEqPresetDisplayName(settings.eqPreset)
+            text = getEqSettingSummary()
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             setPadding(40, 32, 40, 32)
         }
-        btnEqPresets.setOnClickListener {
-            showEqPresetsDialog { chosenPreset ->
-                btnEqPresets.text = getStr("Предустановка: ", "Ön ayar: ") + getEqPresetDisplayName(chosenPreset)
-            }
-        }
-        layout.addView(btnEqPresets)
 
-        val btnEqManual = Button(this).apply {
+        btnTuneCustom = Button(this).apply {
             isAllCaps = false
-            text = getStr("Ручная настройка 5 полос...", "Manuel 5 Bant Ayarı...")
+            text = getStr("Поднастроить эквалайзер (5 полос)...", "Ekolayzeri ince ayarla (5 bant)...")
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             setPadding(40, 32, 40, 32)
+            visibility = if (settings.eqEnabled && settings.eqPreset.equals("custom", ignoreCase = true)) View.VISIBLE else View.GONE
             setOnClickListener {
                 showEqManualDialog {
-                    btnEqPresets.text = getStr("Предустановка: ", "Ön ayar: ") + getEqPresetDisplayName(settings.eqPreset)
+                    btnEqSetting.text = getEqSettingSummary()
                 }
             }
         }
-        layout.addView(btnEqManual)
+
+        btnEqSetting.setOnClickListener {
+            showEqSelectionDialog {
+                btnEqSetting.text = getEqSettingSummary()
+                btnTuneCustom.visibility = if (settings.eqEnabled && settings.eqPreset.equals("custom", ignoreCase = true)) View.VISIBLE else View.GONE
+            }
+        }
+
+        layout.addView(btnEqSetting)
+        layout.addView(btnTuneCustom)
 
         addHeader(getStr("Автоматическое воспроизведение при запуске", "Başlangıçta otomatik oynat"))
         val autoplaySwitch = Switch(this).apply { 
@@ -1245,17 +1289,23 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateSongInfo(title: String) {
         val cleanTitle = title.trim()
-        val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+        val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName
+                     else if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name 
+                     else settings.getLastStation()?.name ?: ""
         
         if (cleanTitle.isNotEmpty() && 
             !cleanTitle.equals(stName, ignoreCase = true) && 
-            cleanTitle != currentSongMetadata && 
             cleanTitle != "Радио" && cleanTitle != "Radyo" && 
             !cleanTitle.equals("unknown", ignoreCase = true)) {
             
+            val isNew = cleanTitle != currentSongMetadata
             currentSongMetadata = cleanTitle
             runOnUiThread {
-                stationNameText.text = "$stName\n$cleanTitle"
+                val fullText = if (stName.isNotEmpty()) "$stName\n$cleanTitle" else cleanTitle
+                stationNameText.text = fullText
+                if (isNew) {
+                    stationNameText.announceForAccessibility("$stName, $cleanTitle")
+                }
             }
         }
     }
@@ -1710,9 +1760,10 @@ private fun showSearchDialog() {
         currentAudioSampleRate = 0
         currentAudioChannels = 0
         
+        currentPlayingStationName = station.name
+        currentSongMetadata = ""
         stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
         btnPlayPause.text = "⏳ " + getStr("Загрузка...", "Yükleniyor...")
-        currentSongMetadata = ""
         
         val intent = Intent(this, PlaybackService::class.java).apply {
             action = "PLAY_STATION"
@@ -2024,6 +2075,28 @@ private fun showSearchDialog() {
             val stopIntent = Intent(this, PlaybackService::class.java).apply { action = "STOP_SERVICE" }
             startService(stopIntent)
             finishAffinity() 
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (PlaybackService.isPlaying || PlaybackService.currentStation.isNotEmpty()) {
+            if (PlaybackService.currentStation.isNotEmpty()) {
+                currentPlayingStationName = PlaybackService.currentStation
+            }
+            if (PlaybackService.currentTitle.isNotEmpty()) {
+                currentSongMetadata = PlaybackService.currentTitle
+            }
+            val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName else (settings.getLastStation()?.name ?: "")
+            val displayText = if (currentSongMetadata.isNotEmpty() && !currentSongMetadata.equals(stName, ignoreCase = true)) {
+                "$stName\n$currentSongMetadata"
+            } else {
+                stName
+            }
+            if (displayText.isNotEmpty()) {
+                stationNameText.text = displayText
+            }
+            btnPlayPause.text = if (PlaybackService.isPlaying) "⏸ " + getStr("Пауза", "Duraklat") else "▶ " + getStr("Играть", "Oynat")
         }
     }
 

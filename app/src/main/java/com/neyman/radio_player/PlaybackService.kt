@@ -52,6 +52,15 @@ import javax.net.ssl.X509TrustManager
 
 class PlaybackService : Service() {
 
+    companion object {
+        var isPlaying: Boolean = false
+            internal set
+        var currentStation: String = ""
+            internal set
+        var currentTitle: String = ""
+            internal set
+    }
+
     private var streamHandle = 0
     private val eqFxHandles = IntArray(5)
     private val eqFrequencies = floatArrayOf(60f, 230f, 910f, 3600f, 14000f)
@@ -604,6 +613,7 @@ class PlaybackService : Service() {
     private fun pausePlayback() {
         if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
             BASS.BASS_ChannelPause(streamHandle)
+            isPlaying = false
             updateSessionState(PlaybackStateCompat.STATE_PAUSED)
             showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
             val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", false) }
@@ -618,6 +628,7 @@ class PlaybackService : Service() {
             registerNoisyReceiver()
             applyEqualizerSettings()
             BASS.BASS_ChannelPlay(streamHandle, false)
+            isPlaying = true
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
             val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", true) }
@@ -661,6 +672,8 @@ class PlaybackService : Service() {
                 currentUrl = intent.getStringExtra("url") ?: ""
                 currentStationName = intent.getStringExtra("name") ?: ""
                 currentSongTitle = ""
+                currentStation = currentStationName
+                currentTitle = ""
                 
                 updateSessionState(PlaybackStateCompat.STATE_BUFFERING)
                 showNotification(PlaybackStateCompat.STATE_BUFFERING, getStr("Загрузка...", "Yükleniyor..."))
@@ -791,6 +804,7 @@ class PlaybackService : Service() {
                     return@Thread
                 }
                 reconnectAttempts = 0
+                isPlaying = false
                 val errCode = BASS.BASS_ErrorGetCode()
                 val errIntent = Intent("com.neyman.radio.ERROR")
                 errIntent.putExtra("error_code", errCode)
@@ -803,6 +817,9 @@ class PlaybackService : Service() {
             registerNoisyReceiver()
             applyEqualizerSettings()
             BASS.BASS_ChannelPlay(streamHandle, false)
+            isPlaying = true
+            currentStation = currentStationName
+            currentTitle = currentSongTitle
             reconnectAttempts = 0
             isReconnecting = false
             consecutiveStallSeconds = 0
@@ -812,8 +829,12 @@ class PlaybackService : Service() {
             updateSessionState(PlaybackStateCompat.STATE_PLAYING)
             showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
             
-            val readyIntent = Intent("com.neyman.radio.READY")
-            readyIntent.putExtra("name", currentStationName)
+            val readyIntent = Intent("com.neyman.radio.READY").apply {
+                putExtra("name", currentStationName)
+                if (currentSongTitle.isNotEmpty()) {
+                    putExtra("title", currentSongTitle)
+                }
+            }
             sendLocalBroadcast(readyIntent)
             
             val stateIntent = Intent("com.neyman.radio.STATE")
@@ -859,10 +880,48 @@ class PlaybackService : Service() {
         
         var newTitle = ""
         
-        val meta = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_META) as? String
+        val metaObj = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_META)
+        val meta = when (metaObj) {
+            is String -> metaObj
+            is java.nio.ByteBuffer -> {
+                val bytes = ByteArray(metaObj.remaining())
+                metaObj.get(bytes)
+                try { String(bytes, Charsets.UTF_8) } catch (e: Exception) { String(bytes) }
+            }
+            is ByteArray -> {
+                try { String(metaObj, Charsets.UTF_8) } catch (e: Exception) { String(metaObj) }
+            }
+            else -> null
+        }
         if (meta != null) {
             val matcher = Pattern.compile("StreamTitle='([^']*)';").matcher(meta)
             if (matcher.find()) newTitle = matcher.group(1)?.trim() ?: ""
+        }
+
+        if (newTitle.isEmpty()) {
+            val oggTags = BASS.BASS_ChannelGetTags(streamHandle, BASS.BASS_TAG_OGG)
+            if (oggTags is Array<*>) {
+                var artist = ""
+                var title = ""
+                for (tag in oggTags) {
+                    val s = tag?.toString() ?: continue
+                    if (s.startsWith("TITLE=", ignoreCase = true)) title = s.substring(6).trim()
+                    if (s.startsWith("ARTIST=", ignoreCase = true)) artist = s.substring(7).trim()
+                }
+                if (title.isNotEmpty()) {
+                    newTitle = if (artist.isNotEmpty()) "$artist - $title" else title
+                }
+            }
+        }
+
+        if (newTitle.isEmpty()) {
+            val hlsExtInf = BASS.BASS_ChannelGetTags(streamHandle, BASSHLS.BASS_TAG_HLS_EXTINF) as? String
+            if (hlsExtInf != null && hlsExtInf.contains(",")) {
+                val candidate = hlsExtInf.substringAfter(",").trim()
+                if (candidate.isNotEmpty() && !candidate.startsWith("#")) {
+                    newTitle = candidate
+                }
+            }
         }
 
         if (newTitle.isEmpty() && currentUrl.contains("streamtheworld.com")) {
@@ -902,6 +961,7 @@ class PlaybackService : Service() {
 
         if (newTitle.isNotEmpty() && !newTitle.equals(currentStationName, ignoreCase = true) && newTitle != currentSongTitle) {
             currentSongTitle = newTitle
+            currentTitle = newTitle
             try { SettingsManager(this).addTrackToHistory(newTitle) } catch (e: Exception) {}
             
             val intent = Intent("com.neyman.radio.METADATA")
@@ -988,11 +1048,17 @@ class PlaybackService : Service() {
     }
 
     private fun stopServiceAndApp() {
+        isPlaying = false
+        currentStation = ""
+        currentTitle = ""
         sendActionToActivity("com.neyman.radio.STOP_APP")
         stopSelf()
     }
 
     override fun onDestroy() {
+        isPlaying = false
+        currentStation = ""
+        currentTitle = ""
         metadataTimer?.cancel()
         reconnectHandler.removeCallbacksAndMessages(null)
         unregisterNetworkCallback()
