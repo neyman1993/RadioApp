@@ -2,6 +2,7 @@ package com.neyman.radio_player
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.DialogInterface
 import android.content.*
 import android.content.res.Configuration
 import android.content.pm.PackageManager
@@ -862,28 +863,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getEqPresetDisplayName(preset: String): String {
-        return when (preset) {
-            "Flat" -> getStr("Обычный (Flat)", "Düz (Flat)")
-            "Bass Boost" -> getStr("Усиление басов", "Bas Güçlendirme")
-            "Rock" -> getStr("Рок", "Rock")
-            "Pop" -> getStr("Поп", "Pop")
-            "Jazz" -> getStr("Джаз", "Caz")
-            "Classical" -> getStr("Классика", "Klasik")
-            "Vocal" -> getStr("Вокал", "Vokal")
-            "Electronic" -> getStr("Электронная", "Elektronik")
-            "Custom" -> getStr("Пользовательский", "Özel")
+        return when (preset.lowercase(Locale.ROOT)) {
+            "flat" -> getStr("Обычный (Flat)", "Düz (Flat)")
+            "bass_boost" -> getStr("Усиление басов", "Bas Güçlendirme")
+            "rock" -> getStr("Рок", "Rock")
+            "pop" -> getStr("Поп", "Pop")
+            "jazz" -> getStr("Джаз", "Caz")
+            "classical" -> getStr("Классика", "Klasik")
+            "vocal" -> getStr("Вокал", "Vokal")
+            "electronic" -> getStr("Электронная", "Elektronik")
+            "custom" -> getStr("Пользовательский", "Özel")
             else -> preset
         }
     }
 
     private fun showEqPresetsDialog(onPresetSelected: (String) -> Unit) {
         val presets = SettingsManager.PRESET_NAMES
-        val displayNames = presets.map { getEqPresetDisplayName(it) }.toTypedArray()
-        val currentIndex = presets.indexOf(settings.eqPreset).takeIf { it >= 0 } ?: 0
+        val displayNames: Array<CharSequence> = presets.map { getEqPresetDisplayName(it) as CharSequence }.toTypedArray()
+        val currentIndex = presets.indexOf(settings.eqPreset.lowercase(Locale.ROOT)).takeIf { it >= 0 } ?: 0
         
         AlertDialog.Builder(this)
             .setTitle(getStr("Предустановки эквалайзера", "Ekolayzer Ön Ayarları"))
-            .setSingleChoiceItems(displayNames, currentIndex) { dialog, which ->
+            .setSingleChoiceItems(displayNames, currentIndex) { dialog: DialogInterface, which: Int ->
                 val chosen = presets[which]
                 settings.applyPreset(chosen)
                 notifyEqUpdated()
@@ -934,7 +935,7 @@ class MainActivity : AppCompatActivity() {
                             bands[i] = g.toFloat()
                             valLabel.text = if (g > 0) "+$g dB" else "$g dB"
                             settings.saveEqBands(bands)
-                            settings.eqPreset = "Custom"
+                            settings.eqPreset = "custom"
                             notifyEqUpdated()
                             onBandsChanged()
                         }
@@ -954,7 +955,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle(getStr("Ручная настройка (5 полос)", "Manuel Ayar (5 Bant)"))
             .setView(dialogScroll)
             .setNeutralButton(getStr("Сбросить в 0", "Sıfırla")) { _, _ ->
-                settings.applyPreset("Flat")
+                settings.applyPreset("flat")
                 notifyEqUpdated()
                 onBandsChanged()
             }

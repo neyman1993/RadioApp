@@ -263,4 +263,8 @@ class SettingsManager(context: Context) {
     fun clearStationHistory() {
         prefs.edit().remove("station_history_json").apply()
     }
+
+    companion object {
+        val PRESET_NAMES = arrayOf("flat", "bass_boost", "rock", "pop", "jazz", "classical", "vocal", "electronic", "custom")
+    }
 }
