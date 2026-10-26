@@ -42,6 +42,11 @@ object RadioDatabaseManager {
         val createdAt: Long = 0L
     )
 
+    data class BatchResult(
+        val rawCount: Int,
+        val stations: List<DbStation>
+    )
+
     @Volatile
     private var isLoaded = false
     private val stations = ArrayList<DbStation>()
@@ -111,7 +116,7 @@ object RadioDatabaseManager {
         }
     }
 
-    fun importDatabase(context: Context, inputStream: InputStream): DatabaseStats {
+    fun importDatabase(context: Context, inputStream: InputStream, isTr: Boolean = false): DatabaseStats {
         val tmpFile = File(context.filesDir, "$DATABASE_FILE_NAME.tmp")
         if (tmpFile.exists()) tmpFile.delete()
 
@@ -135,12 +140,14 @@ object RadioDatabaseManager {
             }
         } catch (e: Exception) {
             tmpFile.delete()
-            throw IllegalArgumentException("Ошибка в структуре файла radio_database.json: ${e.localizedMessage}")
+            val errPrefix = if (isTr) "radio_database.json dosya yapısı hatalı: " else "Ошибка в структуре файла radio_database.json: "
+            throw IllegalArgumentException(errPrefix + (e.localizedMessage ?: e.toString()))
         }
 
         if (testStations.isEmpty()) {
             tmpFile.delete()
-            throw IllegalArgumentException("В выбранном файле не найдено радиостанций")
+            val emptyMsg = if (isTr) "Seçilen dosyada radyo istasyonu bulunamadı" else "В выбранном файле не найдено радиостанций"
+            throw IllegalArgumentException(emptyMsg)
         }
 
         val targetFile = getDatabaseFile(context)
@@ -166,6 +173,7 @@ object RadioDatabaseManager {
 
     fun downloadDatabase(
         context: Context,
+        isTr: Boolean = false,
         onProgress: (count: Int, message: String) -> Unit,
         onFinished: (success: Boolean, errorMsg: String?, stats: DatabaseStats?) -> Unit
     ) {
@@ -175,21 +183,23 @@ object RadioDatabaseManager {
             try {
                 if (tmpFile.exists()) tmpFile.delete()
 
-                onProgress(0, "Подключение к серверам Radio Browser...")
+                val connectMsg = if (isTr) "Radio Browser sunucularına bağlanılıyor..." else "Подключение к серверам Radio Browser..."
+                onProgress(0, connectMsg)
 
                 val downloadedStations = ArrayList<DbStation>()
-                val pageLimit = 2500
+                val pageLimit = 5000
                 var offset = 0
                 var activeServerIndex = 0
 
                 while (true) {
                     if (cancelRequested) {
                         tmpFile.delete()
-                        onFinished(false, "Загрузка отменена пользователем", null)
+                        val cancelMsg = if (isTr) "İşlem kullanıcı tarafından iptal edildi" else "Загрузка отменена пользователем"
+                        onFinished(false, cancelMsg, null)
                         return@Thread
                     }
 
-                    var pageDownloaded = false
+                    var batchResult: BatchResult? = null
                     var lastErr = ""
 
                     for (shift in API_SERVERS.indices) {
@@ -199,9 +209,9 @@ object RadioDatabaseManager {
 
                         try {
                             val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                                connectTimeout = 8000
-                                readTimeout = 18000
-                                setRequestProperty("User-Agent", "Radio Player Local Database/1.0")
+                                connectTimeout = 10000
+                                readTimeout = 30000
+                                setRequestProperty("User-Agent", "Radio Player Local Database/2.0")
                                 setRequestProperty("Accept-Encoding", "gzip")
                             }
 
@@ -212,23 +222,12 @@ object RadioDatabaseManager {
                                     conn.inputStream
                                 }
 
-                                val batch = parseStationsFromJsonStream(inStream)
+                                val result = parseStationsFromJsonStream(inStream)
                                 inStream.close()
                                 conn.disconnect()
 
-                                if (batch.isEmpty()) {
-                                    pageDownloaded = true
-                                    break
-                                }
-
-                                downloadedStations.addAll(batch)
+                                batchResult = result
                                 activeServerIndex = serverIdx
-                                pageDownloaded = true
-                                onProgress(downloadedStations.size, "Скачано ${downloadedStations.size} станций...")
-
-                                if (batch.size < pageLimit) {
-                                    break
-                                }
                                 break
                             } else {
                                 lastErr = "HTTP ${conn.responseCode}"
@@ -239,26 +238,41 @@ object RadioDatabaseManager {
                         }
                     }
 
-                    if (!pageDownloaded) {
+                    if (batchResult == null) {
                         tmpFile.delete()
-                        onFinished(false, "Не удалось загрузить данные: $lastErr", null)
+                        val failMsg = if (isTr) "Veritabanı indirilemedi: $lastErr" else "Не удалось загрузить данные: $lastErr"
+                        onFinished(false, failMsg, null)
                         return@Thread
                     }
 
-                    if (offset + pageLimit > downloadedStations.size) {
+                    val rawCount = batchResult.rawCount
+                    downloadedStations.addAll(batchResult.stations)
+
+                    val progressMsg = if (isTr) {
+                        "İndirilen istasyon sayısı: ${downloadedStations.size}..."
+                    } else {
+                        "Скачано ${downloadedStations.size} станций..."
+                    }
+                    onProgress(downloadedStations.size, progressMsg)
+
+                    // End reached if server returned less than requested pageLimit
+                    if (rawCount < pageLimit) {
                         break
                     }
+
                     offset += pageLimit
-                    try { Thread.sleep(100) } catch (e: Exception) {}
+                    try { Thread.sleep(120) } catch (e: Exception) {}
                 }
 
                 if (downloadedStations.isEmpty()) {
                     tmpFile.delete()
-                    onFinished(false, "Сервер вернул пустой список станций", null)
+                    val emptyMsg = if (isTr) "Sunucudan istasyon listesi alınamadı" else "Сервер вернул пустой список станций"
+                    onFinished(false, emptyMsg, null)
                     return@Thread
                 }
 
-                onProgress(downloadedStations.size, "Обработка и сохранение локальной базы...")
+                val savingMsg = if (isTr) "Yerel veritabanı işleniyor ve kaydediliyor..." else "Обработка и сохранение локальной базы..."
+                onProgress(downloadedStations.size, savingMsg)
 
                 writeDatabaseFile(tmpFile, downloadedStations)
 
@@ -282,11 +296,13 @@ object RadioDatabaseManager {
         }.start()
     }
 
-    private fun parseStationsFromJsonStream(inputStream: InputStream): List<DbStation> {
+    private fun parseStationsFromJsonStream(inputStream: InputStream): BatchResult {
         val list = ArrayList<DbStation>()
+        var rawCount = 0
         val reader = JsonReader(InputStreamReader(inputStream, "UTF-8"))
         reader.beginArray()
         while (reader.hasNext()) {
+            rawCount++
             reader.beginObject()
             var name = ""
             var url = ""
@@ -300,11 +316,11 @@ object RadioDatabaseManager {
 
             while (reader.hasNext()) {
                 when (reader.nextName()) {
-                    "name" -> name = reader.nextString().trim()
-                    "url" -> url = reader.nextString().trim()
-                    "url_resolved" -> urlResolved = reader.nextString().trim()
-                    "country" -> country = reader.nextString().trim()
-                    "tags" -> tags = reader.nextString().trim()
+                    "name" -> name = try { reader.nextString().trim() } catch (e: Exception) { reader.skipValue(); "" }
+                    "url" -> url = try { reader.nextString().trim() } catch (e: Exception) { reader.skipValue(); "" }
+                    "url_resolved" -> urlResolved = try { reader.nextString().trim() } catch (e: Exception) { reader.skipValue(); "" }
+                    "country" -> country = try { reader.nextString().trim() } catch (e: Exception) { reader.skipValue(); "" }
+                    "tags" -> tags = try { reader.nextString().trim() } catch (e: Exception) { reader.skipValue(); "" }
                     "bitrate" -> bitrate = try { reader.nextInt() } catch (e: Exception) { reader.skipValue(); 0 }
                     "codec" -> codec = try { reader.nextString().trim() } catch (e: Exception) { reader.skipValue(); "" }
                     "clickcount" -> clickCount = try { reader.nextInt() } catch (e: Exception) { reader.skipValue(); 0 }
@@ -320,7 +336,8 @@ object RadioDatabaseManager {
             }
         }
         reader.endArray()
-        return list
+        reader.close()
+        return BatchResult(rawCount, list)
     }
 
     private fun parseDatabaseFile(
@@ -337,7 +354,6 @@ object RadioDatabaseManager {
         var createdAt = 0L
 
         if (reader.peek() == JsonToken.BEGIN_ARRAY) {
-            // Direct array of stations
             reader.beginArray()
             while (reader.hasNext()) {
                 parseSingleStation(reader)?.let { outStations.add(it) }
@@ -415,7 +431,6 @@ object RadioDatabaseManager {
         }
         reader.close()
 
-        // Auto-compute countries if missing
         if (outCountries.isEmpty() && outStations.isNotEmpty()) {
             val cMap = HashMap<String, Int>()
             for (s in outStations) {
@@ -429,7 +444,6 @@ object RadioDatabaseManager {
             outCountries.sortBy { it.first.lowercase(Locale.getDefault()) }
         }
 
-        // Auto-compute genres if missing
         if (outGenres.isEmpty() && outStations.isNotEmpty()) {
             val gMap = HashMap<String, Int>()
             for (s in outStations) {

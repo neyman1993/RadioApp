@@ -79,7 +79,16 @@ class MainActivity : AppCompatActivity() {
     private var preSettingsMode = "MAIN_MENU"
     private var currentCountryName = ""
     private var currentGenreName = ""
-    private var isTr = false
+    private val isTr: Boolean
+        get() {
+            if (!::settings.isInitialized) return Locale.getDefault().language.lowercase(Locale.ROOT).startsWith("tr")
+            val userLang = settings.getLanguage()
+            return if (userLang == "system") {
+                Locale.getDefault().language.lowercase(Locale.ROOT).startsWith("tr")
+            } else {
+                userLang == "tr"
+            }
+        }
     private var currentSongMetadata = ""
     private var currentPlayingStationName = ""
 
@@ -339,7 +348,7 @@ class MainActivity : AppCompatActivity() {
         settings.applyTheme()
         super.onCreate(savedInstanceState)
         
-        isTr = Locale.getDefault().language == "tr"
+        // isTr dynamically evaluated via property
         favorites = settings.loadFavorites()
         customStations = settings.loadCustomStations()
         allLoadedCustomStations.clear()
@@ -1069,7 +1078,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         addSettingItem(layout, getStr("Язык приложения", "Uygulama Dili"), arrayOf(getStr("Системный", "Sistem"), "Русский", "Türkçe"), arrayOf("system", "ru", "tr"), { settings.getLanguage() }) { newLang ->
-            settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang))
+            settings.saveLanguage(newLang)
+            val tag = if (newLang == "system") "" else newLang
+            AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(tag))
+            recreate()
         }
 
         lateinit var btnTuneCustom: Button
@@ -1707,8 +1719,8 @@ class MainActivity : AppCompatActivity() {
         thread {
             try {
                 val inStream = contentResolver.openInputStream(uri)
-                    ?: throw IOException("Не удалось открыть файл")
-                val stats = inStream.use { RadioDatabaseManager.importDatabase(this, it) }
+                    ?: throw IOException(getStr("Не удалось открыть файл", "Dosya açılamadı"))
+                val stats = inStream.use { RadioDatabaseManager.importDatabase(this, it, isTr) }
                 runOnUiThread {
                     progressDialog.dismiss()
                     settings.localDatabaseEnabled = true
@@ -1765,6 +1777,7 @@ class MainActivity : AppCompatActivity() {
 
         RadioDatabaseManager.downloadDatabase(
             context = this,
+            isTr = isTr,
             onProgress = { count, message ->
                 runOnUiThread {
                     tvProgress.text = message
@@ -1773,7 +1786,7 @@ class MainActivity : AppCompatActivity() {
             },
             onFinished = { success, errorMsg, stats ->
                 runOnUiThread {
-                    downloadDialog.dismiss()
+                    downloadDialog?.dismiss()
                     if (success && stats != null) {
                         settings.localDatabaseEnabled = true
                         countries.clear()
@@ -1785,7 +1798,7 @@ class MainActivity : AppCompatActivity() {
                         )
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                         listView.announceForAccessibility(msg)
-                    } else if (!errorMsg.isNullOrEmpty() && errorMsg != "Загрузка отменена пользователем") {
+                    } else if (!errorMsg.isNullOrEmpty() && !errorMsg.contains("отменена", ignoreCase = true) && !errorMsg.contains("iptal", ignoreCase = true)) {
                         AlertDialog.Builder(this)
                             .setTitle(getStr("Ошибка загрузки", "İndirme Hatası"))
                             .setMessage(errorMsg)
