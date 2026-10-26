@@ -16,7 +16,8 @@
         android:label="Radio Player"
         android:supportsRtl="true"
         android:theme="@style/Theme.RadioPlayer"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:largeHeap="true">
         
         <activity
             android:name=".MainActivity"

@@ -4,7 +4,7 @@ import org.json.JSONObject
 
 object StationDeduplicator {
     
-    private fun normalizeName(name: String): String {
+    fun normalizeName(name: String): String {
         var n = name.lowercase()
         n = n.replace(Regex("\\d+\\.\\d+"), "")
         n = n.replace(Regex("\\d+"), "")

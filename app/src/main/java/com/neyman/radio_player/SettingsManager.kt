@@ -60,6 +60,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("station_history_enabled", false)
         set(value) = prefs.edit().putBoolean("station_history_enabled", value).apply()
 
+    var localDatabaseEnabled: Boolean
+        get() = prefs.getBoolean("local_database_enabled", false)
+        set(value) = prefs.edit().putBoolean("local_database_enabled", value).apply()
+
     var eqEnabled: Boolean
         get() = prefs.getBoolean("eq_enabled", false)
         set(value) = prefs.edit().putBoolean("eq_enabled", value).apply()

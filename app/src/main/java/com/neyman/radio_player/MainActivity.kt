@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private val genres = ArrayList<String>()
     private var favorites = ArrayList<Station>()
     private var customStations = ArrayList<Station>()
+    private var updateDbStatusUi: (() -> Unit)? = null
     private var allLoadedCustomStations = ArrayList<Station>()
     private var currentPlaylist = ArrayList<Station>()
     private var currentStationIndex = -1
@@ -254,6 +255,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     
+    private val importDatabaseLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importLocalDatabaseFromUri(uri)
+        }
+    }
+
     private var m3uExportData: String? = null
 
     private val exportM3uLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
@@ -622,6 +629,22 @@ class MainActivity : AppCompatActivity() {
         }
         btnTopTab.setOnClickListener {
             currentMode = "TOP_STATIONS"; updateUIForMode()
+            if (settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+                stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+                thread {
+                    val list = RadioDatabaseManager.getPopularStations(this, 100, settings.minBitrate, settings.hideDuplicates)
+                    stations.clear()
+                    stations.addAll(list)
+                    allLoadedStations.clear()
+                    allLoadedStations.addAll(list)
+                    runOnUiThread {
+                        updateList(stations.map { it.name })
+                        val stCount = stations.size
+                        listView.announceForAccessibility(getStr("Загружено $stCount станций из локальной базы", "Yerel veritabanından $stCount istasyon yüklendi"))
+                    }
+                }
+                return@setOnClickListener
+            }
             fetchStations("topclick/100") 
         }
         btnFavTab.setOnClickListener { 
@@ -1144,6 +1167,146 @@ class MainActivity : AppCompatActivity() {
         }
         layout.addView(folderDisplay)
         
+        addHeader(getStr("Локальная база радиостанций", "Yerel Radyo Veritabanı"))
+
+        val tvDbStatus = TextView(this).apply {
+            textSize = 14f
+            setPadding(dpToPx(16), dpToPx(4), dpToPx(16), dpToPx(8))
+        }
+
+        lateinit var btnDeleteDb: Button
+        lateinit var swLocalDb: Switch
+
+        val updateStatusBlock = {
+            if (RadioDatabaseManager.hasDatabase(this@MainActivity)) {
+                val stats = RadioDatabaseManager.getStats(this@MainActivity)
+                if (stats != null) {
+                    val stCount = stats.stationsCount
+                    val cCount = stats.countriesCount
+                    tvDbStatus.text = getStr(
+                        "Статус: База загружена ($stCount станций, $cCount стран)",
+                        "Durum: Veritabanı yüklendi ($stCount istasyon, $cCount ülke)"
+                    )
+                } else {
+                    tvDbStatus.text = getStr(
+                        "Статус: База загружена",
+                        "Durum: Veritabanı yüklendi"
+                    )
+                }
+                btnDeleteDb.visibility = View.VISIBLE
+            } else {
+                tvDbStatus.text = getStr(
+                    "Статус: База не установлена (скачайте или укажите файл)",
+                    "Durum: Veritabanı yüklü değil (indirin veya dosya seçin)"
+                )
+                btnDeleteDb.visibility = View.GONE
+            }
+            swLocalDb.isChecked = settings.localDatabaseEnabled
+        }
+        updateDbStatusUi = updateStatusBlock
+
+        swLocalDb = addSwitchSetting(
+            layout,
+            getStr("Использовать локальную базу (рекомендуется для пользователей из России)", "Yerel veritabanını kullan (Rusya'daki kullanıcılar için önerilir)"),
+            settings.localDatabaseEnabled
+        ) { isChecked ->
+            if (isChecked && !RadioDatabaseManager.hasDatabase(this@MainActivity)) {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(getStr("Локальная база", "Yerel Veritabanı"))
+                    .setMessage(getStr(
+                        "Файл базы radio_database.json не найден. Вы можете скачать его прямо сейчас или выбрать готовый файл с компьютера.",
+                        "radio_database.json veritabanı dosyası bulunamadı. Şimdi indirebilir veya bilgisayardan hazır dosyayı seçebilirsiniz."
+                    ))
+                    .setPositiveButton(getStr("Скачать базу", "Veritabanını İndir")) { _, _ ->
+                        startDatabaseDownload()
+                    }
+                    .setNeutralButton(getStr("Выбрать файл", "Dosya Seç")) { _, _ ->
+                        importDatabaseLauncher.launch(arrayOf("*/*"))
+                    }
+                    .setNegativeButton(getStr("Отмена", "İptal")) { _, _ ->
+                        swLocalDb.isChecked = false
+                        settings.localDatabaseEnabled = false
+                    }
+                    .show()
+            } else {
+                settings.localDatabaseEnabled = isChecked
+                countries.clear()
+                genres.clear()
+                val statusMsg = if (isChecked) {
+                    getStr("Локальная база включена", "Yerel veritabanı etkinleştirildi")
+                } else {
+                    getStr("Локальная база выключена (используются серверы)", "Yerel veritabanı kapatıldı (sunucular kullanılıyor)")
+                }
+                Toast.makeText(this@MainActivity, statusMsg, Toast.LENGTH_SHORT).show()
+                listView.announceForAccessibility(statusMsg)
+            }
+        }
+
+        layout.addView(tvDbStatus)
+
+        val btnDownloadDb = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Скачать / обновить базу радиостанций", "Radyo veritabanını indir / güncelle")
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
+            setOnClickListener {
+                startDatabaseDownload()
+            }
+        }
+
+        val btnSelectDbFile = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Выбрать файл radio_database.json с устройства", "Cihazdan radio_database.json dosyasını seç")
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
+            setOnClickListener {
+                importDatabaseLauncher.launch(arrayOf("*/*"))
+            }
+        }
+
+        btnDeleteDb = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Удалить локальную базу", "Yerel veritabanını sil")
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(getStr("Удаление базы", "Veritabanını Sil"))
+                    .setMessage(getStr("Вы уверены, что хотите удалить локальную базу radio_database.json?", "radio_database.json yerel veritabanını silmek istediğinizden emin misiniz?"))
+                    .setPositiveButton(getStr("Удалить", "Sil")) { _, _ ->
+                        RadioDatabaseManager.deleteDatabase(this@MainActivity)
+                        settings.localDatabaseEnabled = false
+                        swLocalDb.isChecked = false
+                        visibility = View.GONE
+                        updateStatusBlock()
+                        countries.clear()
+                        genres.clear()
+                        val msg = getStr("Локальная база удалена", "Yerel veritabanı silindi")
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                        listView.announceForAccessibility(msg)
+                    }
+                    .setNegativeButton(getStr("Отмена", "İptal"), null)
+                    .show()
+            }
+        }
+
+        layout.addView(btnDownloadDb)
+        layout.addView(btnSelectDbFile)
+        layout.addView(btnDeleteDb)
+        updateStatusBlock()
+
         addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
         val backupLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1533,7 +1696,122 @@ class MainActivity : AppCompatActivity() {
         exportM3uLauncher.launch(fileName)
     }
 
+    private fun importLocalDatabaseFromUri(uri: Uri) {
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle(getStr("Импорт базы", "Veritabanını İçe Aktar"))
+            .setMessage(getStr("Чтение и проверка файла radio_database.json...", "radio_database.json dosyası okunuyor ve doğrulanıyor..."))
+            .setCancelable(false)
+            .create()
+        progressDialog.show()
+
+        thread {
+            try {
+                val inStream = contentResolver.openInputStream(uri)
+                    ?: throw IOException("Не удалось открыть файл")
+                val stats = inStream.use { RadioDatabaseManager.importDatabase(this, it) }
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    settings.localDatabaseEnabled = true
+                    countries.clear()
+                    genres.clear()
+                    updateDbStatusUi?.invoke()
+                    val msg = getStr(
+                        "Локальная база успешно загружена: ${stats.stationsCount} станций, ${stats.countriesCount} стран!",
+                        "Yerel veritabanı başarıyla yüklendi: ${stats.stationsCount} istasyon, ${stats.countriesCount} ülke!"
+                    )
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    listView.announceForAccessibility(msg)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    AlertDialog.Builder(this)
+                        .setTitle(getStr("Ошибка импорта", "İçe Aktarma Hatası"))
+                        .setMessage(e.localizedMessage ?: e.toString())
+                        .setPositiveButton(getStr("ОК", "Tamam"), null)
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun startDatabaseDownload() {
+        val progressView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(24), dpToPx(16), dpToPx(24), dpToPx(16))
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            setPadding(0, 0, 0, dpToPx(12))
+        }
+        val tvProgress = TextView(this).apply {
+            text = getStr("Подключение к серверу...", "Sunucuya bağlanılıyor...")
+            textSize = 14f
+        }
+        progressView.addView(progressBar)
+        progressView.addView(tvProgress)
+
+        var downloadDialog: AlertDialog? = null
+        downloadDialog = AlertDialog.Builder(this)
+            .setTitle(getStr("Загрузка локальной базы", "Yerel Veritabanı İndiriliyor"))
+            .setView(progressView)
+            .setCancelable(false)
+            .setNegativeButton(getStr("Отмена", "İptal")) { dialog, _ ->
+                RadioDatabaseManager.cancelDownload()
+                dialog.dismiss()
+            }
+            .create()
+        downloadDialog.show()
+
+        RadioDatabaseManager.downloadDatabase(
+            context = this,
+            onProgress = { count, message ->
+                runOnUiThread {
+                    tvProgress.text = message
+                    tvProgress.announceForAccessibility(message)
+                }
+            },
+            onFinished = { success, errorMsg, stats ->
+                runOnUiThread {
+                    downloadDialog.dismiss()
+                    if (success && stats != null) {
+                        settings.localDatabaseEnabled = true
+                        countries.clear()
+                        genres.clear()
+                        updateDbStatusUi?.invoke()
+                        val msg = getStr(
+                            "Локальная база успешно скачана: ${stats.stationsCount} станций, ${stats.countriesCount} стран!",
+                            "Yerel veritabanı başarıyla indirildi: ${stats.stationsCount} istasyon, ${stats.countriesCount} ülke!"
+                        )
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        listView.announceForAccessibility(msg)
+                    } else if (!errorMsg.isNullOrEmpty() && errorMsg != "Загрузка отменена пользователем") {
+                        AlertDialog.Builder(this)
+                            .setTitle(getStr("Ошибка загрузки", "İndirme Hatası"))
+                            .setMessage(errorMsg)
+                            .setPositiveButton(getStr("ОК", "Tamam"), null)
+                            .show()
+                    }
+                }
+            }
+        )
+    }
+
     private fun exportCountryStationsToM3u(country: String) {
+        if (settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+            Toast.makeText(this, getStr("Экспорт станций...", "İstasyonlar dışa aktarılıyor..."), Toast.LENGTH_SHORT).show()
+            thread {
+                val countryStations = RadioDatabaseManager.getStationsByCountry(this, country, settings.minBitrate, settings.hideDuplicates)
+                if (countryStations.isNotEmpty()) {
+                    m3uExportData = buildM3uString(countryStations)
+                    val safeFileName = "${country.replace(Regex("[^a-zA-Z0-9.-]"), "_")}_stations.m3u"
+                    runOnUiThread { exportM3uLauncher.launch(safeFileName) }
+                } else {
+                    runOnUiThread { Toast.makeText(this@MainActivity, getStr("Станции не найдены", "İstasyonlar bulunamadı"), Toast.LENGTH_SHORT).show() }
+                }
+            }
+            return
+        }
         Toast.makeText(this, getStr("Загрузка станций для экспорта...", "Dışa aktarım için istasyonlar yükleniyor..."), Toast.LENGTH_SHORT).show()
         thread {
             try {
@@ -1921,6 +2199,22 @@ private fun showSearchDialog() {
     }
 
     private fun fetchStations(endpoint: String, isSearch: Boolean = false) {
+        if (isSearch && settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+            stationNameText.announceForAccessibility(getStr("Поиск...", "Aranıyor..."))
+            thread {
+                val list = RadioDatabaseManager.searchStations(this, endpoint, settings.minBitrate, settings.hideDuplicates)
+                stations.clear()
+                stations.addAll(list)
+                allLoadedStations.clear()
+                allLoadedStations.addAll(list)
+                runOnUiThread {
+                    updateList(stations.map { it.name })
+                    val stCount = stations.size
+                    listView.announceForAccessibility(getStr("Найдено $stCount станций в локальной базе", "Yerel veritabanında $stCount istasyon bulundu"))
+                }
+            }
+            return
+        }
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
         thread {
             try {
@@ -1957,6 +2251,21 @@ private fun showSearchDialog() {
 
     private fun loadCountries() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+        if (settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+            thread {
+                val list = RadioDatabaseManager.getCountries(this, settings.hideDuplicates)
+                countries.clear()
+                countries.addAll(list)
+                allCountries.clear()
+                allCountries.addAll(list)
+                runOnUiThread {
+                    countrySearchEdit.setText("")
+                    updateList(countries)
+                    listView.announceForAccessibility(getStr("Загружено ${countries.size} стран из локальной базы", "Yerel veritabanından ${countries.size} ülke yüklendi"))
+                }
+            }
+            return
+        }
         thread {
             try {
                 val res = fetchJsonWithFallback("countries")
@@ -1974,6 +2283,18 @@ private fun showSearchDialog() {
     
     private fun loadGenres() {
         stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+        if (settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+            thread {
+                val list = RadioDatabaseManager.getGenres(this, MAIN_GENRES)
+                runOnUiThread {
+                    genres.clear()
+                    genres.addAll(list)
+                    updateList(genres)
+                    listView.announceForAccessibility(getStr("Загружено ${genres.size} жанров из локальной базы", "Yerel veritabanından ${genres.size} tür yüklendi"))
+                }
+            }
+            return
+        }
         
         genres.clear()
         genres.addAll(MAIN_GENRES.map { it.replaceFirstChar { c -> if (c.isLowerCase()) c.titlecase(Locale.US) else c.toString() } })
@@ -2056,6 +2377,23 @@ private fun showSearchDialog() {
         currentMode = "STATIONS_OF_COUNTRY"
         runOnUiThread { countrySearchEdit.setText("") }
         updateUIForMode()
+        if (settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+            stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+            thread {
+                val list = RadioDatabaseManager.getStationsByCountry(this, country, settings.minBitrate, settings.hideDuplicates)
+                stations.clear()
+                stations.addAll(list)
+                allLoadedStations.clear()
+                allLoadedStations.addAll(list)
+                runOnUiThread {
+                    countrySearchEdit.setText("")
+                    updateList(stations.map { it.name })
+                    val stCount = stations.size
+                    listView.announceForAccessibility(getStr("Загружено $stCount станций из локальной базы", "Yerel veritabanından $stCount istasyon yüklendi"))
+                }
+            }
+            return
+        }
         fetchStations("bycountry/" + URLEncoder.encode(country, "UTF-8"))
     }
     
@@ -2063,6 +2401,22 @@ private fun showSearchDialog() {
         currentGenreName = genre
         currentMode = "STATIONS_OF_GENRE"
         updateUIForMode()
+        if (settings.localDatabaseEnabled && RadioDatabaseManager.hasDatabase(this)) {
+            stationNameText.announceForAccessibility(getStr("Загрузка...", "Yükleniyor..."))
+            thread {
+                val list = RadioDatabaseManager.getStationsByGenre(this, genre, settings.minBitrate, settings.hideDuplicates)
+                stations.clear()
+                stations.addAll(list)
+                allLoadedStations.clear()
+                allLoadedStations.addAll(list)
+                runOnUiThread {
+                    updateList(stations.map { it.name })
+                    val stCount = stations.size
+                    listView.announceForAccessibility(getStr("Загружено $stCount станций из локальной базы", "Yerel veritabanından $stCount istasyon yüklendi"))
+                }
+            }
+            return
+        }
         fetchStations("bytagexact/" + URLEncoder.encode(genre.lowercase(Locale.US), "UTF-8"))
     }
 
