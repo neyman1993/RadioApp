@@ -179,7 +179,7 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             settings.recFolderUri = uri.toString()
-            folderDisplay.text = getStr("Выбрана своя папка", "Özel klasör seçildi")
+            folderDisplay.text = getStr("Папка для записей: Выбрана своя папка", "Kayıt Klasörü: Özel klasör seçildi")
             Toast.makeText(this, getStr("Папка выбрана", "Klasör seçildi"), Toast.LENGTH_SHORT).show()
         }
     }
@@ -839,19 +839,23 @@ class MainActivity : AppCompatActivity() {
     private fun getStr(ru: String, tr: String): String = if (isTr) tr else ru
 
     private fun addSettingItem(layout: LinearLayout, title: String, displayNames: Array<String>, values: Array<String>, currentValue: () -> String, onSelected: (String) -> Unit) {
-        layout.addView(TextView(this).apply { text = title; textSize = 16f; setTypeface(null, Typeface.BOLD); setPadding(0, 24, 0, 8) })
-        val btn = Button(this).apply { isAllCaps = false
+        val btn = Button(this).apply {
+            isAllCaps = false
             val current = currentValue()
             val idx = values.indexOf(current).takeIf { it >= 0 } ?: 0
-            text = displayNames[idx]
+            text = "$title: ${displayNames[idx]}"
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setPadding(40, 32, 40, 32)
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
             setOnClickListener {
                 val currentDialogIdx = values.indexOf(currentValue()).takeIf { it >= 0 } ?: 0
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle(title)
                     .setSingleChoiceItems(displayNames, currentDialogIdx) { dialog, which ->
-                        text = displayNames[which]
+                        text = "$title: ${displayNames[which]}"
                         onSelected(values[which])
                         dialog.dismiss()
                     }
@@ -860,6 +864,30 @@ class MainActivity : AppCompatActivity() {
             }
         }
         layout.addView(btn)
+    }
+
+    private fun addSwitchSetting(
+        layout: LinearLayout,
+        title: String,
+        isChecked: Boolean,
+        onCheckedChange: (Boolean) -> Unit
+    ): Switch {
+        val sw = Switch(this).apply {
+            text = title
+            textSize = 16f
+            setTypeface(null, Typeface.BOLD)
+            this.isChecked = isChecked
+            setPadding(dpToPx(12), dpToPx(14), dpToPx(12), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
+            setOnCheckedChangeListener { _, isCheckedVal ->
+                onCheckedChange(isCheckedVal)
+            }
+        }
+        layout.addView(sw)
+        return sw
     }
 
     private fun notifyEqUpdated() {
@@ -1023,21 +1051,27 @@ class MainActivity : AppCompatActivity() {
             settings.saveLanguage(newLang); AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(newLang))
         }
 
-        addHeader(getStr("Эквалайзер звука (5 полос)", "Ses Ekolayzeri (5 Bant)"))
-
         lateinit var btnTuneCustom: Button
         val btnEqSetting = Button(this).apply {
             isAllCaps = false
             text = getEqSettingSummary()
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setPadding(40, 32, 40, 32)
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
         }
 
         btnTuneCustom = Button(this).apply {
             isAllCaps = false
             text = getStr("Поднастроить эквалайзер (5 полос)...", "Ekolayzeri ince ayarla (5 bant)...")
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setPadding(40, 32, 40, 32)
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
             visibility = if (settings.eqEnabled && settings.eqPreset.equals("custom", ignoreCase = true)) View.VISIBLE else View.GONE
             setOnClickListener {
                 showEqManualDialog {
@@ -1056,16 +1090,13 @@ class MainActivity : AppCompatActivity() {
         layout.addView(btnEqSetting)
         layout.addView(btnTuneCustom)
 
-        addHeader(getStr("Автоматическое воспроизведение при запуске", "Başlangıçta otomatik oynat"))
-        val autoplaySwitch = Switch(this).apply { 
-            isChecked = settings.autoplayAtStart
-            setOnCheckedChangeListener { _, isCheckedVal -> settings.autoplayAtStart = isCheckedVal } 
+        addSwitchSetting(layout, getStr("Автовоспроизведение при запуске", "Başlangıçta otomatik oynat"), settings.autoplayAtStart) {
+            settings.autoplayAtStart = it
         }
-        layout.addView(autoplaySwitch)
 
-        addHeader(getStr("Скрывать дубликаты", "Kopyaları Gizle"))
-        val dupSwitch = Switch(this).apply { isChecked = settings.hideDuplicates; setOnCheckedChangeListener { _, isCheckedVal -> settings.hideDuplicates = isCheckedVal } }
-        layout.addView(dupSwitch)
+        addSwitchSetting(layout, getStr("Скрывать дубликаты станций", "Kopyaları Gizle"), settings.hideDuplicates) {
+            settings.hideDuplicates = it
+        }
 
         addSettingItem(layout, getStr("Качество записи", "Kayıt Kalitesi"), arrayOf(getStr("По умолчанию (то что дает сервер)", "Varsayılan (sunucunun sağladığı)"), "64 kbps", "128 kbps", "192 kbps", "320 kbps"), arrayOf("0", "64", "128", "192", "320"), { settings.minBitrate.toString() }) { newBit ->
             settings.minBitrate = newBit.toInt()
@@ -1075,68 +1106,90 @@ class MainActivity : AppCompatActivity() {
             settings.bufferSeconds = newBuf.toInt()
         }
 
-        addHeader(getStr("Автопереподключение при обрыве сети", "Ağ kesildiğinde otomatik yeniden bağlan"))
-        val autoReconnectSwitch = Switch(this).apply {
-            isChecked = settings.autoReconnect
-            setOnCheckedChangeListener { _, isCheckedVal -> settings.autoReconnect = isCheckedVal }
+        addSwitchSetting(layout, getStr("Автопереподключение при обрыве сети", "Ağ kesildiğinde otomatik yeniden bağlan"), settings.autoReconnect) {
+            settings.autoReconnect = it
         }
-        layout.addView(autoReconnectSwitch)
 
-        addHeader(getStr("Аудиофокус", "Ses Odağı"))
-        val audioFocusSwitch = Switch(this).apply {
-            isChecked = settings.audioFocusEnabled
-            setOnCheckedChangeListener { _, isCheckedVal -> settings.audioFocusEnabled = isCheckedVal }
+        addSwitchSetting(layout, getStr("Управление аудиофокусом", "Ses Odağı Yönetimi"), settings.audioFocusEnabled) {
+            settings.audioFocusEnabled = it
         }
-        layout.addView(audioFocusSwitch)
 
-        addHeader(getStr("Автопауза при отключении наушников", "Kulaklık çıkarıldığında otomatik duraklat"))
-        val unplugSwitch = Switch(this).apply {
-            isChecked = settings.pauseOnUnplug
-            setOnCheckedChangeListener { _, isCheckedVal -> settings.pauseOnUnplug = isCheckedVal }
+        addSwitchSetting(layout, getStr("Автопауза при отключении наушников", "Kulaklık çıkarıldığında otomatik duraklat"), settings.pauseOnUnplug) {
+            settings.pauseOnUnplug = it
         }
-        layout.addView(unplugSwitch)
 
-        addHeader(getStr("История прослушанных треков", "Çalınan parçaların geçmişi"))
-        val trackHistSwitch = Switch(this).apply {
-            isChecked = settings.trackHistoryEnabled
-            setOnCheckedChangeListener { _, isCheckedVal ->
-                settings.trackHistoryEnabled = isCheckedVal
-                btnTrackHistoryTab.visibility = if (isCheckedVal) View.VISIBLE else View.GONE
+        addSwitchSetting(layout, getStr("История прослушанных треков", "Çalınan parçaların geçmişi"), settings.trackHistoryEnabled) {
+            settings.trackHistoryEnabled = it
+            btnTrackHistoryTab.visibility = if (it) View.VISIBLE else View.GONE
+        }
+
+        addSwitchSetting(layout, getStr("История станций (Недавние)", "Son çalınan istasyonlar geçmişi"), settings.stationHistoryEnabled) {
+            settings.stationHistoryEnabled = it
+            btnRecentTab.visibility = if (it) View.VISIBLE else View.GONE
+        }
+
+        val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("Папка Music на телефоне", "Telefonda Music klasörü")
+        folderDisplay = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Папка для записей: ", "Kayıt Klasörü: ") + currentFolderText
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
             }
+            setOnClickListener { folderPickerLauncher.launch(null) }
         }
-        layout.addView(trackHistSwitch)
-
-        addHeader(getStr("История станций (Недавние)", "Son çalınan istasyonlar geçmişi"))
-        val stationHistSwitch = Switch(this).apply {
-            isChecked = settings.stationHistoryEnabled
-            setOnCheckedChangeListener { _, isCheckedVal ->
-                settings.stationHistoryEnabled = isCheckedVal
-                btnRecentTab.visibility = if (isCheckedVal) View.VISIBLE else View.GONE
-            }
-        }
-        layout.addView(stationHistSwitch)
-
-        addHeader(getStr("Папка для записей", "Kayıt Klasörü"))
-        val currentFolderText = if (settings.recFolderUri.isNotEmpty()) getStr("Выбрана своя папка", "Özel klasör seçildi") else getStr("Все записи автоматически сохраняются в папку Music на вашем телефоне.", "Tüm kayıtlar telefonunuzdaki Music klasörüne otomatik olarak kaydedilir.")
-        folderDisplay = TextView(this).apply { text = currentFolderText; textSize = 14f; setPadding(0,0,0,16) }
         layout.addView(folderDisplay)
-        layout.addView(Button(this).apply { isAllCaps = false; text = getStr("Выбрать другую папку вручную", "Başka bir klasörü manuel seç"); setOnClickListener { folderPickerLauncher.launch(null) } })
         
         addHeader(getStr("Резервная копия избранного", "Favori Yedekleme"))
-        val backupLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        backupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Экспорт", "Dışa Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { exportFavoritesLauncher.launch("radio_favorites.json") } })
-        backupLayout.addView(Button(this).apply { isAllCaps = false; text = getStr("Импорт", "İçe Aktar"); layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f); setOnClickListener { importFavoritesLauncher.launch(arrayOf("*/*")) } })
+        val backupLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
+        }
+        backupLayout.addView(Button(this).apply {
+            isAllCaps = false
+            text = getStr("Экспорт избранного", "Favorileri Dışa Aktar")
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, 0, dpToPx(4), 0) }
+            setOnClickListener { exportFavoritesLauncher.launch("radio_favorites.json") }
+        })
+        backupLayout.addView(Button(this).apply {
+            isAllCaps = false
+            text = getStr("Импорт избранного", "Favorileri İçe Aktar")
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dpToPx(4), 0, 0, 0) }
+            setOnClickListener { importFavoritesLauncher.launch(arrayOf("*/*")) }
+        })
         layout.addView(backupLayout)
 
-        addHeader(getStr("Фоновый режим и батарея", "Arka Plan ve Pil"))
-        layout.addView(Button(this).apply {
+        val btnBattery = Button(this).apply {
             isAllCaps = false
             text = getStr("Отключить оптимизацию батареи", "Pil optimizasyonunu devre dışı bırak")
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
             setOnClickListener { requestBatteryOptimizationExemption() }
-        })
+        }
+        layout.addView(btnBattery)
         
-        addHeader(getStr("Отладка", "Hata Ayıklama"))
-        layout.addView(Button(this).apply { isAllCaps = false; text = getStr("Сохранить лог в файл", "Günlüğü dosyaya kaydet"); setOnClickListener { logExportLauncher.launch("RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt") } })
+        val btnLog = Button(this).apply {
+            isAllCaps = false
+            text = getStr("Сохранить лог отладки в файл", "Hata ayıklama günlüğünü dosyaya kaydet")
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+            minHeight = dpToPx(56)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(0, dpToPx(4), 0, dpToPx(4))
+            }
+            setOnClickListener { logExportLauncher.launch("RadioApp_Log_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.txt") }
+        }
+        layout.addView(btnLog)
         
         return layout
     }
