@@ -122,12 +122,12 @@ class MainActivity : AppCompatActivity() {
                     }
                     val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName else name
                     val displayText = if (currentSongMetadata.isNotEmpty() && !currentSongMetadata.equals(stName, ignoreCase = true)) {
-                        "$stName\n$currentSongMetadata"
+                        "$stName - $currentSongMetadata"
                     } else {
                         stName
                     }
                     stationNameText.text = displayText
-                    btnPlayPause.text = "⏸ " + getStr("Пауза", "Duraklat")
+                    btnPlayPause.text = getStr("Пауза", "Duraklat")
                 }
                 "com.neyman.radio.METADATA" -> {
                     val title = intent.getStringExtra("title") ?: ""
@@ -135,14 +135,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 "com.neyman.radio.STATE" -> {
                     val isPlaying = intent.getBooleanExtra("isPlaying", false)
-                    btnPlayPause.text = if (isPlaying) "⏸ " + getStr("Пауза", "Duraklat") else "▶ " + getStr("Играть", "Oynat")
+                    btnPlayPause.text = if (isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat")
                 }
                 "com.neyman.radio.ERROR" -> {
                     val errCode = intent.getIntExtra("error_code", -1)
-                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                    val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName
+                                 else if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     val errText = if (errCode != -1) " (Code: $errCode)" else ""
                     stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName + errText
-                    btnPlayPause.text = "▶ " + getStr("Играть", "Oynat")
+                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
                 }
                 "com.neyman.radio.AUDIO_INFO" -> {
@@ -154,14 +155,15 @@ class MainActivity : AppCompatActivity() {
                 "com.neyman.radio.RECONNECTING" -> {
                     val attempt = intent.getIntExtra("attempt", 1)
                     val max = intent.getIntExtra("max", 5)
-                    val stName = if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
+                    val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName
+                                 else if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     val msg = getStr("Переподключение ($attempt/$max): ", "Yeniden bağlanıyor ($attempt/$max): ") + stName
                     stationNameText.text = msg
-                    btnPlayPause.text = "⏳ " + getStr("Загрузка...", "Yükleniyor...")
+                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     stationNameText.announceForAccessibility(msg)
                 }
                 "com.neyman.radio.UNPLUGGED" -> {
-                    btnPlayPause.text = "▶ " + getStr("Играть", "Oynat")
+                    btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     val msg = getStr("Наушники отключены. Воспроизведение на паузе.", "Kulaklık çıkarıldı. Oynatma duraklatıldı.")
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
                     stationNameText.announceForAccessibility(msg)
@@ -528,7 +530,6 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(6))
             isFocusable = true
-            contentDescription = getStr("Текущая станция. Нажмите для меню управления", "Mevcut istasyon. Kontrol menüsü için tıklayın")
             setOnClickListener { showMiniPlayerMenu() }
         }
         
@@ -542,36 +543,33 @@ class MainActivity : AppCompatActivity() {
         }
 
         val btnPrevBtn = Button(this).apply {
-            text = "⏮ " + getStr("Назад", "Geri")
+            text = getStr("Предыдущий", "Önceki")
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             isAllCaps = false
             minHeight = dpToPx(56)
             setPadding(dpToPx(4), dpToPx(12), dpToPx(4), dpToPx(12))
             layoutParams = btnControlParams
-            contentDescription = getStr("Предыдущая станция", "Önceki istasyon")
             setOnClickListener { playPrev() }
         }
         btnPlayPause = Button(this).apply {
-            text = "▶ " + getStr("Играть", "Oynat")
+            text = getStr("Воспроизвести", "Oynat")
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             isAllCaps = false
             minHeight = dpToPx(56)
             setPadding(dpToPx(4), dpToPx(12), dpToPx(4), dpToPx(12))
             layoutParams = btnControlParams
-            contentDescription = getStr("Воспроизведение и пауза", "Oynat ve duraklat")
             setOnClickListener { togglePlayPause() }
         }
         val btnNextBtn = Button(this).apply {
-            text = "⏭ " + getStr("Вперед", "İleri")
+            text = getStr("Следующий", "Sonraki")
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             isAllCaps = false
             minHeight = dpToPx(56)
             setPadding(dpToPx(4), dpToPx(12), dpToPx(4), dpToPx(12))
             layoutParams = btnControlParams
-            contentDescription = getStr("Следующая станция", "Sonraki istasyon")
             setOnClickListener { playNext() }
         }
         
@@ -1301,10 +1299,10 @@ class MainActivity : AppCompatActivity() {
             val isNew = cleanTitle != currentSongMetadata
             currentSongMetadata = cleanTitle
             runOnUiThread {
-                val fullText = if (stName.isNotEmpty()) "$stName\n$cleanTitle" else cleanTitle
+                val fullText = if (stName.isNotEmpty()) "$stName - $cleanTitle" else cleanTitle
                 stationNameText.text = fullText
                 if (isNew) {
-                    stationNameText.announceForAccessibility("$stName, $cleanTitle")
+                    stationNameText.announceForAccessibility(fullText)
                 }
             }
         }
@@ -1762,8 +1760,8 @@ private fun showSearchDialog() {
         
         currentPlayingStationName = station.name
         currentSongMetadata = ""
-        stationNameText.text = getStr("Загрузка...\n", "Yükleniyor...\n") + station.name 
-        btnPlayPause.text = "⏳ " + getStr("Загрузка...", "Yükleniyor...")
+        stationNameText.text = station.name
+        btnPlayPause.text = getStr("Пауза", "Duraklat")
         
         val intent = Intent(this, PlaybackService::class.java).apply {
             action = "PLAY_STATION"
@@ -2089,14 +2087,14 @@ private fun showSearchDialog() {
             }
             val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName else (settings.getLastStation()?.name ?: "")
             val displayText = if (currentSongMetadata.isNotEmpty() && !currentSongMetadata.equals(stName, ignoreCase = true)) {
-                "$stName\n$currentSongMetadata"
+                "$stName - $currentSongMetadata"
             } else {
                 stName
             }
             if (displayText.isNotEmpty()) {
                 stationNameText.text = displayText
             }
-            btnPlayPause.text = if (PlaybackService.isPlaying) "⏸ " + getStr("Пауза", "Duraklat") else "▶ " + getStr("Играть", "Oynat")
+            btnPlayPause.text = if (PlaybackService.isPlaying) getStr("Пауза", "Duraklat") else getStr("Воспроизвести", "Oynat")
         }
     }
 
