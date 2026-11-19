@@ -851,7 +851,11 @@ class PlaybackService : Service() {
         }
     }
 
-    private fun startBassPlayback(reqId: Long, urlToPlay: String, stationNameToPlay: String) {
+    private fun startBassPlayback(
+        reqId: Long = playRequestId.incrementAndGet(),
+        urlToPlay: String = currentUrl,
+        stationNameToPlay: String = currentStationName
+    ) {
         metadataTimer?.cancel()
 
         Thread {

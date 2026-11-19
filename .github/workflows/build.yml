@@ -23,6 +23,7 @@ jobs:
         cache-disabled: true
     - name: Build APK
       run: |
+        set -o pipefail
         gradle assembleDebug 2>&1 | tee build_log.txt
     - name: Upload Error Log
       if: failure()
