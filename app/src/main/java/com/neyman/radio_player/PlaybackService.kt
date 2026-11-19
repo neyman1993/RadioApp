@@ -43,6 +43,7 @@ import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import java.util.regex.Pattern
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
@@ -69,6 +70,9 @@ class PlaybackService : Service() {
 
     private val sleepTimerHandler = Handler(Looper.getMainLooper())
     private var sleepTimerRunnable: Runnable? = null
+
+    private val playRequestId = AtomicLong(0)
+    private val playbackLock = Any()
 
     private var streamHandle = 0
     private val eqFxHandles = IntArray(5)
@@ -516,14 +520,17 @@ class PlaybackService : Service() {
 
     private fun triggerReconnect(reason: String) {
         val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
+        val autoSwitch = sp.getBoolean("auto_switch_on_fail", false)
         val autoReconnect = sp.getBoolean("auto_reconnect", false)
-        if (!autoReconnect || isReconnecting || currentUrl.isEmpty()) return
+        if (autoSwitch || !autoReconnect || isReconnecting || currentUrl.isEmpty()) return
 
         if (reconnectAttempts >= maxReconnectAttempts) {
             isReconnecting = false
             reconnectAttempts = 0
             val errIntent = Intent("com.neyman.radio.ERROR").apply {
                 putExtra("error_code", -99)
+                putExtra("url", currentUrl)
+                putExtra("name", currentStationName)
             }
             sendLocalBroadcast(errIntent)
             showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка сети: не удалось переподключиться", "Ağ hatası: yeniden bağlanılamadı"), currentStationName)
@@ -544,9 +551,15 @@ class PlaybackService : Service() {
         }
         sendLocalBroadcast(reconnectIntent)
 
+        val reqId = playRequestId.incrementAndGet()
+        val urlToReconnect = currentUrl
+        val nameToReconnect = currentStationName
+
         reconnectHandler.postDelayed({
             isReconnecting = false
-            startBassPlayback()
+            if (reqId == playRequestId.get()) {
+                startBassPlayback(reqId, urlToReconnect, nameToReconnect)
+            }
         }, delayMs)
     }
 
@@ -620,48 +633,55 @@ class PlaybackService : Service() {
     }
 
     private fun pausePlayback() {
-        if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
-            isPlaying = false
-            updateSessionState(PlaybackStateCompat.STATE_PAUSED)
-            showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
-            val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", false) }
-            sendLocalBroadcast(stateIntent)
-            unregisterNoisyReceiver()
+        synchronized(playbackLock) {
+            if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) == BASS.BASS_ACTIVE_PLAYING) {
+                isPlaying = false
+                updateSessionState(PlaybackStateCompat.STATE_PAUSED)
+                showNotification(PlaybackStateCompat.STATE_PAUSED, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
+                val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", false) }
+                sendLocalBroadcast(stateIntent)
+                unregisterNoisyReceiver()
 
-            val settings = SettingsManager(this)
-            if (settings.fadeInOutEnabled) {
-                BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f, 400)
-                val h = streamHandle
-                Handler(Looper.getMainLooper()).postDelayed({
-                    if (streamHandle == h && !isPlaying) {
-                        BASS.BASS_ChannelPause(h)
-                    }
-                }, 400)
-            } else {
-                BASS.BASS_ChannelPause(streamHandle)
+                val settings = SettingsManager(this)
+                if (settings.fadeInOutEnabled) {
+                    BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f, 400)
+                    val h = streamHandle
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        synchronized(playbackLock) {
+                            if (streamHandle == h && !isPlaying) {
+                                BASS.BASS_ChannelPause(h)
+                            }
+                        }
+                    }, 400)
+                } else {
+                    BASS.BASS_ChannelPause(streamHandle)
+                }
             }
         }
     }
 
     private fun resumePlayback() {
-        if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) != BASS.BASS_ACTIVE_PLAYING) {
-            requestAudioFocus()
-            registerNoisyReceiver()
-            applyEqualizerSettings()
-            val settings = SettingsManager(this)
-            if (settings.fadeInOutEnabled) {
-                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f)
-                BASS.BASS_ChannelPlay(streamHandle, false)
-                BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f, 1200)
-            } else {
-                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f)
-                BASS.BASS_ChannelPlay(streamHandle, false)
+        synchronized(playbackLock) {
+            if (streamHandle != 0 && BASS.BASS_ChannelIsActive(streamHandle) != BASS.BASS_ACTIVE_PLAYING) {
+                requestAudioFocus()
+                registerNoisyReceiver()
+                applyEqualizerSettings()
+                val settings = SettingsManager(this)
+                if (settings.fadeInOutEnabled) {
+                    BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f)
+                    BASS.BASS_ChannelPlay(streamHandle, false)
+                    BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f, 1200)
+                } else {
+                    BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f)
+                    BASS.BASS_ChannelPlay(streamHandle, false)
+                }
+                isPlaying = true
+                updateSessionState(PlaybackStateCompat.STATE_PLAYING)
+                showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
+                val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", true) }
+                sendLocalBroadcast(stateIntent)
+                startMetadataTimer()
             }
-            isPlaying = true
-            updateSessionState(PlaybackStateCompat.STATE_PLAYING)
-            showNotification(PlaybackStateCompat.STATE_PLAYING, if (currentSongTitle.isNotEmpty()) currentSongTitle else currentStationName)
-            val stateIntent = Intent("com.neyman.radio.STATE").apply { putExtra("isPlaying", true) }
-            sendLocalBroadcast(stateIntent)
         }
     }
 
@@ -698,16 +718,36 @@ class PlaybackService : Service() {
 
         when (intent?.action) {
             "PLAY_STATION" -> {
-                currentUrl = intent.getStringExtra("url") ?: ""
-                currentStationName = intent.getStringExtra("name") ?: ""
+                val newUrl = intent.getStringExtra("url") ?: ""
+                val newName = intent.getStringExtra("name") ?: ""
+                if (newUrl.isEmpty()) return START_NOT_STICKY
+
+                val reqId = playRequestId.incrementAndGet()
+
+                reconnectHandler.removeCallbacksAndMessages(null)
+                isReconnecting = false
+                reconnectAttempts = 0
+
+                synchronized(playbackLock) {
+                    if (streamHandle != 0) {
+                        BASS.BASS_ChannelStop(streamHandle)
+                        BASS.BASS_StreamFree(streamHandle)
+                        streamHandle = 0
+                        eqFxHandles.fill(0)
+                    }
+                    isPlaying = false
+                }
+
+                currentUrl = newUrl
+                currentStationName = newName
                 currentSongTitle = ""
                 currentStation = currentStationName
                 currentTitle = ""
                 
                 updateSessionState(PlaybackStateCompat.STATE_BUFFERING)
-                showNotification(PlaybackStateCompat.STATE_BUFFERING, getStr("Загрузка...", "Yükleniyor..."))
+                showNotification(PlaybackStateCompat.STATE_BUFFERING, getStr("Загрузка...", "Yükleniyor..."), currentStationName)
                 
-                startBassPlayback()
+                startBassPlayback(reqId, newUrl, newName)
             }
             "TOGGLE" -> togglePlayback()
             "UPDATE_EQ" -> applyEqualizerSettings()
@@ -811,117 +851,168 @@ class PlaybackService : Service() {
         }
     }
 
-    private fun startBassPlayback() {
+    private fun startBassPlayback(reqId: Long, urlToPlay: String, stationNameToPlay: String) {
         metadataTimer?.cancel()
 
         Thread {
-            if (streamHandle != 0) {
-                BASS.BASS_StreamFree(streamHandle)
-                streamHandle = 0
-                eqFxHandles.fill(0)
-            }
+            if (reqId != playRequestId.get()) return@Thread
 
             val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
             val bufferSec = sp.getInt("buffer_seconds", 5)
             BASS.BASS_SetConfig(BASS.BASS_CONFIG_NET_BUFFER, bufferSec * 1000)
 
             // Resolve .pls/.m3u playlists to get the actual stream URL
-            val resolvedUrl = resolveStreamUrl(currentUrl)
+            val resolvedUrl = try {
+                resolveStreamUrl(urlToPlay)
+            } catch (e: Exception) {
+                urlToPlay
+            }
+
+            if (reqId != playRequestId.get()) return@Thread
+
             val playUrl = buildProxyUrl(resolvedUrl)
             val flags = BASS.BASS_STREAM_AUTOFREE or BASS.BASS_STREAM_STATUS
 
             fun tryCreateStream(urlToTry: String): Int {
+                if (reqId != playRequestId.get()) return 0
                 var handle = 0
                 if (urlToTry.contains(".m3u8", ignoreCase = true)) {
                     try {
                         handle = BASSHLS.BASS_HLS_StreamCreateURL(urlToTry, flags, null, null)
                     } catch (e: Exception) { }
+                    if (reqId != playRequestId.get()) {
+                        if (handle != 0) BASS.BASS_StreamFree(handle)
+                        return 0
+                    }
                     if (handle == 0) {
-                        handle = BASS.BASS_StreamCreateURL(urlToTry, 0, flags, null, null)
+                        try {
+                            handle = BASS.BASS_StreamCreateURL(urlToTry, 0, flags, null, null)
+                        } catch (e: Exception) { }
                     }
                 } else {
-                    handle = BASS.BASS_StreamCreateURL(urlToTry, 0, flags, null, null)
+                    try {
+                        handle = BASS.BASS_StreamCreateURL(urlToTry, 0, flags, null, null)
+                    } catch (e: Exception) { }
+                    if (reqId != playRequestId.get()) {
+                        if (handle != 0) BASS.BASS_StreamFree(handle)
+                        return 0
+                    }
                     if (handle == 0) {
                         try {
                             handle = BASSHLS.BASS_HLS_StreamCreateURL(urlToTry, flags, null, null)
                         } catch (e: Exception) { }
                     }
                 }
+                if (reqId != playRequestId.get()) {
+                    if (handle != 0) {
+                        BASS.BASS_StreamFree(handle)
+                    }
+                    return 0
+                }
                 return handle
             }
 
             // 1. Try through local proxy
-            streamHandle = tryCreateStream(playUrl)
+            var createdHandle = tryCreateStream(playUrl)
 
             // 2. Fallback: try direct URL without proxy if proxy failed
-            if (streamHandle == 0 && playUrl != resolvedUrl) {
-                streamHandle = tryCreateStream(resolvedUrl)
+            if (createdHandle == 0 && playUrl != resolvedUrl && reqId == playRequestId.get()) {
+                createdHandle = tryCreateStream(resolvedUrl)
             }
 
             // 3. Fallback: try shoutcast semicolon URL format if not already ending in ;
-            if (streamHandle == 0 && !resolvedUrl.endsWith(";") && !resolvedUrl.endsWith("/;")) {
+            if (createdHandle == 0 && !resolvedUrl.endsWith(";") && !resolvedUrl.endsWith("/;") && reqId == playRequestId.get()) {
                 val scUrl = if (resolvedUrl.endsWith("/")) "$resolvedUrl;" else "$resolvedUrl/;"
                 val scProxyUrl = buildProxyUrl(scUrl)
-                streamHandle = tryCreateStream(scProxyUrl)
-                if (streamHandle == 0) {
-                    streamHandle = tryCreateStream(scUrl)
+                createdHandle = tryCreateStream(scProxyUrl)
+                if (createdHandle == 0 && reqId == playRequestId.get()) {
+                    createdHandle = tryCreateStream(scUrl)
                 }
             }
 
-            if (streamHandle == 0) {
-                val sp = getSharedPreferences("radio_prefs", Context.MODE_PRIVATE)
-                val autoReconnect = sp.getBoolean("auto_reconnect", true)
-                if (autoReconnect && reconnectAttempts < maxReconnectAttempts) {
+            // If a newer station was requested while we were trying URLs:
+            if (reqId != playRequestId.get()) {
+                if (createdHandle != 0) {
+                    BASS.BASS_StreamFree(createdHandle)
+                }
+                return@Thread
+            }
+
+            if (createdHandle == 0) {
+                val autoSwitch = sp.getBoolean("auto_switch_on_fail", false)
+                val autoReconnect = sp.getBoolean("auto_reconnect", false)
+                if (!autoSwitch && autoReconnect && reconnectAttempts < maxReconnectAttempts) {
                     triggerReconnect("stream_create_failed")
                     return@Thread
                 }
                 reconnectAttempts = 0
                 isPlaying = false
                 val errCode = BASS.BASS_ErrorGetCode()
-                val errIntent = Intent("com.neyman.radio.ERROR")
-                errIntent.putExtra("error_code", errCode)
+                val errIntent = Intent("com.neyman.radio.ERROR").apply {
+                    putExtra("error_code", errCode)
+                    putExtra("url", urlToPlay)
+                    putExtra("name", stationNameToPlay)
+                }
                 sendLocalBroadcast(errIntent)
-                showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка: $errCode", "Hata: $errCode"), currentStationName)
+                showNotification(PlaybackStateCompat.STATE_PAUSED, getStr("Ошибка: $errCode", "Hata: $errCode"), stationNameToPlay)
                 return@Thread
             }
 
-            requestAudioFocus()
-            registerNoisyReceiver()
-            applyEqualizerSettings()
-            val settings = SettingsManager(this)
-            if (settings.fadeInOutEnabled) {
-                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f)
-                BASS.BASS_ChannelPlay(streamHandle, false)
-                BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f, 1200)
-            } else {
-                BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f)
-                BASS.BASS_ChannelPlay(streamHandle, false)
-            }
-            isPlaying = true
-            currentStation = currentStationName
-            currentTitle = currentSongTitle
-            reconnectAttempts = 0
-            isReconnecting = false
-            consecutiveStallSeconds = 0
-
-            extractAndBroadcastAudioInfo()
-
-            updateSessionState(PlaybackStateCompat.STATE_PLAYING)
-            showNotification(PlaybackStateCompat.STATE_PLAYING, currentStationName)
-            
-            val readyIntent = Intent("com.neyman.radio.READY").apply {
-                putExtra("name", currentStationName)
-                if (currentSongTitle.isNotEmpty()) {
-                    putExtra("title", currentSongTitle)
+            synchronized(playbackLock) {
+                if (reqId != playRequestId.get()) {
+                    BASS.BASS_StreamFree(createdHandle)
+                    return@Thread
                 }
-            }
-            sendLocalBroadcast(readyIntent)
-            
-            val stateIntent = Intent("com.neyman.radio.STATE")
-            stateIntent.putExtra("isPlaying", true)
-            sendLocalBroadcast(stateIntent)
 
-            startMetadataTimer()
+                if (streamHandle != 0) {
+                    BASS.BASS_ChannelStop(streamHandle)
+                    BASS.BASS_StreamFree(streamHandle)
+                    streamHandle = 0
+                    eqFxHandles.fill(0)
+                }
+
+                streamHandle = createdHandle
+
+                requestAudioFocus()
+                registerNoisyReceiver()
+                applyEqualizerSettings()
+                val settings = SettingsManager(this)
+                if (settings.fadeInOutEnabled) {
+                    BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 0f)
+                    BASS.BASS_ChannelPlay(streamHandle, false)
+                    BASS.BASS_ChannelSlideAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f, 1200)
+                } else {
+                    BASS.BASS_ChannelSetAttribute(streamHandle, BASS.BASS_ATTRIB_VOL, 1f)
+                    BASS.BASS_ChannelPlay(streamHandle, false)
+                }
+                isPlaying = true
+                currentStation = stationNameToPlay
+                currentTitle = currentSongTitle
+                reconnectAttempts = 0
+                isReconnecting = false
+                consecutiveStallSeconds = 0
+
+                extractAndBroadcastAudioInfo()
+
+                updateSessionState(PlaybackStateCompat.STATE_PLAYING)
+                showNotification(PlaybackStateCompat.STATE_PLAYING, stationNameToPlay)
+                
+                val readyIntent = Intent("com.neyman.radio.READY").apply {
+                    putExtra("name", stationNameToPlay)
+                    putExtra("url", urlToPlay)
+                    if (currentSongTitle.isNotEmpty()) {
+                        putExtra("title", currentSongTitle)
+                    }
+                }
+                sendLocalBroadcast(readyIntent)
+                
+                val stateIntent = Intent("com.neyman.radio.STATE").apply {
+                    putExtra("isPlaying", true)
+                }
+                sendLocalBroadcast(stateIntent)
+
+                startMetadataTimer()
+            }
         }.start()
     }
 
@@ -1147,8 +1238,13 @@ class PlaybackService : Service() {
         abandonAudioFocus()
         try { proxyServerSocket?.close() } catch (e: Exception) {}
         proxyExecutor.shutdownNow()
-        if (streamHandle != 0) {
-            BASS.BASS_StreamFree(streamHandle)
+        playRequestId.incrementAndGet()
+        synchronized(playbackLock) {
+            if (streamHandle != 0) {
+                BASS.BASS_ChannelStop(streamHandle)
+                BASS.BASS_StreamFree(streamHandle)
+                streamHandle = 0
+            }
         }
         BASS.BASS_Free()
         mediaSession.release()

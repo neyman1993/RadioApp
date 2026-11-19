@@ -40,6 +40,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("auto_reconnect", false)
         set(value) = prefs.edit().putBoolean("auto_reconnect", value).apply()
 
+    var autoSwitchOnFail: Boolean
+        get() = prefs.getBoolean("auto_switch_on_fail", false)
+        set(value) = prefs.edit().putBoolean("auto_switch_on_fail", value).apply()
+
     var audioFocusEnabled: Boolean
         get() = prefs.getBoolean("audio_focus_enabled", false)
         set(value) = prefs.edit().putBoolean("audio_focus_enabled", value).apply()

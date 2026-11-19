@@ -91,6 +91,9 @@ class MainActivity : AppCompatActivity() {
         }
     private var currentSongMetadata = ""
     private var currentPlayingStationName = ""
+    private var currentPlayingStationUrl = ""
+    private var consecutiveErrorSkips = 0
+    private val autoSwitchHandler = Handler(Looper.getMainLooper())
 
     private var isRecording = false
     private var recordThread: Thread? = null
@@ -120,8 +123,14 @@ class MainActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 "com.neyman.radio.READY" -> {
+                    consecutiveErrorSkips = 0
+                    autoSwitchHandler.removeCallbacksAndMessages(null)
                     val name = intent.getStringExtra("name") ?: ""
                     val title = intent.getStringExtra("title") ?: ""
+                    val url = intent.getStringExtra("url") ?: ""
+                    if (url.isNotEmpty()) {
+                        currentPlayingStationUrl = url
+                    }
                     if (name.isNotEmpty()) {
                         currentPlayingStationName = name
                     }
@@ -147,12 +156,35 @@ class MainActivity : AppCompatActivity() {
                 }
                 "com.neyman.radio.ERROR" -> {
                     val errCode = intent.getIntExtra("error_code", -1)
+                    val errUrl = intent.getStringExtra("url") ?: ""
+                    if (errUrl.isNotEmpty() && currentPlayingStationUrl.isNotEmpty() && errUrl != currentPlayingStationUrl) {
+                        return
+                    }
                     val stName = if (currentPlayingStationName.isNotEmpty()) currentPlayingStationName
                                  else if (currentStationIndex != -1 && currentPlaylist.isNotEmpty()) currentPlaylist[currentStationIndex].name else ""
                     val errText = if (errCode != -1) " (Code: $errCode)" else ""
                     stationNameText.text = getStr("Ошибка: ", "Hata: ") + stName + errText
                     btnPlayPause.text = getStr("Воспроизвести", "Oynat")
                     stationNameText.announceForAccessibility(getStr("Ошибка воспроизведения", "Çalma hatası"))
+
+                    if (settings.autoSwitchOnFail && currentPlaylist.size > 1) {
+                        consecutiveErrorSkips++
+                        if (consecutiveErrorSkips < currentPlaylist.size) {
+                            val skipMsg = getStr("Станция не работает. Переключение на следующую...", "İstasyon çalışmıyor. Sonrakine geçiliyor...")
+                            Toast.makeText(this@MainActivity, skipMsg, Toast.LENGTH_SHORT).show()
+                            stationNameText.announceForAccessibility(skipMsg)
+
+                            autoSwitchHandler.removeCallbacksAndMessages(null)
+                            autoSwitchHandler.postDelayed({
+                                playNext(isAutoSwitch = true)
+                            }, 1200L)
+                        } else {
+                            consecutiveErrorSkips = 0
+                            val allFailMsg = getStr("Все станции в списке недоступны", "Listedeki tüm istasyonlar kullanılamıyor")
+                            Toast.makeText(this@MainActivity, allFailMsg, Toast.LENGTH_LONG).show()
+                            stationNameText.announceForAccessibility(allFailMsg)
+                        }
+                    }
                 }
                 "com.neyman.radio.AUDIO_INFO" -> {
                     currentAudioCodec = intent.getStringExtra("codec") ?: ""
@@ -176,7 +208,7 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
                     stationNameText.announceForAccessibility(msg)
                 }
-                "com.neyman.radio.NEXT" -> playNext()
+                "com.neyman.radio.NEXT" -> playNext(isAutoSwitch = false)
                 "com.neyman.radio.PREV" -> playPrev()
                 "com.neyman.radio.STOP_APP" -> attemptExit(force = true)
             }
@@ -1145,6 +1177,21 @@ class MainActivity : AppCompatActivity() {
 
         addSwitchSetting(layout, getStr("Автопереподключение при обрыве сети", "Ağ kesildiğinde otomatik yeniden bağlan"), settings.autoReconnect) {
             settings.autoReconnect = it
+        }
+
+        addSwitchSetting(
+            layout,
+            getStr("Переключать на следующую при нерабочей станции", "Çalışmayan istasyonda otomatik sonrakine geç"),
+            settings.autoSwitchOnFail
+        ) { isChecked ->
+            settings.autoSwitchOnFail = isChecked
+            val msg = if (isChecked) {
+                getStr("Автопереключение при нерабочей станции включено", "Çalışmayan istasyonda otomatik geçiş açık")
+            } else {
+                getStr("Автопереключение при нерабочей станции выключено", "Çalışmayan istasyonda otomatik geçiş kapalı")
+            }
+            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+            listView.announceForAccessibility(msg)
         }
 
         addSwitchSetting(layout, getStr("Управление аудиофокусом", "Ses Odağı Yönetimi"), settings.audioFocusEnabled) {
@@ -2136,9 +2183,14 @@ private fun showSearchDialog() {
             .setNegativeButton(getStr("Отмена", "İptal"), null).show(); input.requestFocus()
     }
 
-    private fun playStation(index: Int, playlist: List<Station>) {
+    private fun playStation(index: Int, playlist: List<Station>, isAutoSwitch: Boolean = false) {
         if (playlist.isEmpty() || index !in playlist.indices) return
         
+        if (!isAutoSwitch) {
+            consecutiveErrorSkips = 0
+            autoSwitchHandler.removeCallbacksAndMessages(null)
+        }
+
         currentPlaylist = ArrayList(playlist)
         currentStationIndex = index
         val station = currentPlaylist[index]
@@ -2153,6 +2205,7 @@ private fun showSearchDialog() {
         currentAudioChannels = 0
         
         currentPlayingStationName = station.name
+        currentPlayingStationUrl = station.url
         currentSongMetadata = ""
         stationNameText.text = station.name
         btnPlayPause.text = getStr("Пауза", "Duraklat")
@@ -2166,6 +2219,8 @@ private fun showSearchDialog() {
     }
 
     private fun togglePlayPause() {
+        consecutiveErrorSkips = 0
+        autoSwitchHandler.removeCallbacksAndMessages(null)
         if (currentStationIndex == -1 || currentPlaylist.isEmpty()) {
             val lastStation = settings.getLastStation()
             if (lastStation != null) {
@@ -2180,16 +2235,22 @@ private fun showSearchDialog() {
         ContextCompat.startForegroundService(this, intent)
     }
 
-    private fun playNext() {
+    private fun playNext(isAutoSwitch: Boolean = false) {
         if (currentPlaylist.isEmpty()) return
+        if (!isAutoSwitch) {
+            consecutiveErrorSkips = 0
+            autoSwitchHandler.removeCallbacksAndMessages(null)
+        }
         val nextIdx = if (currentStationIndex + 1 >= currentPlaylist.size) 0 else currentStationIndex + 1
-        playStation(nextIdx, currentPlaylist)
+        playStation(nextIdx, currentPlaylist, isAutoSwitch = isAutoSwitch)
     }
 
     private fun playPrev() {
         if (currentPlaylist.isEmpty()) return
+        consecutiveErrorSkips = 0
+        autoSwitchHandler.removeCallbacksAndMessages(null)
         val prevIdx = if (currentStationIndex - 1 < 0) currentPlaylist.size - 1 else currentStationIndex - 1
-        playStation(prevIdx, currentPlaylist)
+        playStation(prevIdx, currentPlaylist, isAutoSwitch = false)
     }
 
     private fun fetchJsonWithFallback(endpoint: String): JSONArray {
@@ -2569,6 +2630,7 @@ private fun showSearchDialog() {
     }
 
     override fun onDestroy() {
+        autoSwitchHandler.removeCallbacksAndMessages(null)
         unregisterReceiver(playbackReceiver)
         isRecording = false
         super.onDestroy()
